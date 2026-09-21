@@ -54,7 +54,8 @@ non-invasive, read-only sources — first hit wins:
 OAuth providers rotate their tokens, so they prefer live sources over frozen
 copies:
 
-- **Anthropic**: config → OMP db (`-tags omp`) → Claude Code keychain entry (macOS)
+- **Anthropic**: config → OMP db (`-tags omp`) → Claude Code's own storage
+  (macOS keychain entry, or `~/.claude/.credentials.json`)
 - **Codex**: config → `~/.codex/auth.json` (Codex CLI's own file)
 
 `aimeter -show-creds` prints which source each provider resolved from — never

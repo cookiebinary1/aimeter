@@ -14,7 +14,8 @@ package main
 //
 // OAuth providers rotate their tokens, so live sources beat frozen copies:
 //
-//	anthropic:  config → OMP db (-tags omp) → macOS keychain Claude Code entry
+//	anthropic:  config → OMP db (-tags omp) → Claude Code's own storage
+//	            (macOS keychain entry, or ~/.claude/.credentials.json)
 //	codex:      config → ~/.codex/auth.json (Codex CLI's own file)
 
 import (
@@ -29,8 +30,9 @@ import (
 
 // Injectable for tests.
 var (
-	configPath    = defaultConfigPath()
-	codexAuthPath = defaultCodexAuthPath()
+	configPath      = defaultConfigPath()
+	codexAuthPath   = defaultCodexAuthPath()
+	claudeCredsPath = defaultClaudeCredsPath()
 )
 
 func defaultConfigPath() string {
@@ -42,6 +44,11 @@ func defaultConfigPath() string {
 	// the historical ~/.config/aimeter/ location and matches user expectation.
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".config", "aimeter", "credentials.json")
+}
+
+func defaultClaudeCredsPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".claude", ".credentials.json")
 }
 
 func defaultCodexAuthPath() string {
@@ -100,12 +107,40 @@ func keychainGet(account string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// claudeKeychainToken is the macOS fallback for the Anthropic OAuth token,
-// reading the entry Claude Code itself stores.
-func claudeKeychainToken() string {
-	if runtime.GOOS != "darwin" {
+// claudeOAuthToken is the Anthropic OAuth fallback, reading Claude Code's own
+// storage: the macOS keychain entry, or ~/.claude/.credentials.json (which is
+// where Claude Code stores it on Linux and in other setups).
+func claudeOAuthToken() (string, string) {
+	if runtime.GOOS == "darwin" {
+		if t := claudeKeychainToken(); t != "" {
+			return t, "claude-code:keychain"
+		}
+	}
+	if t := claudeTokenFromFile(claudeCredsPath); t != "" {
+		return t, "claude-code:credentials-file"
+	}
+	return "", ""
+}
+
+// claudeTokenFromFile parses Claude Code's .credentials.json.
+func claudeTokenFromFile(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
 		return ""
 	}
+	var kc struct {
+		ClaudeAiOauth struct {
+			AccessToken string `json:"accessToken"`
+		} `json:"claudeAiOauth"`
+	}
+	if json.Unmarshal(b, &kc) != nil {
+		return ""
+	}
+	return kc.ClaudeAiOauth.AccessToken
+}
+
+// claudeKeychainToken reads the macOS keychain entry Claude Code itself stores.
+func claudeKeychainToken() string {
 	out, err := exec.Command("security", "find-generic-password", "-s", "Claude Code-credentials", "-w").Output()
 	if err != nil {
 		return ""
@@ -178,9 +213,9 @@ func resolveCreds() (Creds, map[string]string) {
 		src["anthropic"] = "config"
 	}
 	if c.AnthToken == "" {
-		if t := claudeKeychainToken(); t != "" {
+		if t, s := claudeOAuthToken(); t != "" {
 			c.AnthToken = t
-			src["anthropic"] = "keychain:claude-code"
+			src["anthropic"] = s
 		}
 	}
 	if cfg.Codex.AccessToken != "" {

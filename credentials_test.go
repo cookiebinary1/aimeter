@@ -11,10 +11,13 @@ import (
 func isolate(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	oldCfg, oldCodex := configPath, codexAuthPath
+	oldCfg, oldCodex, oldClaude := configPath, codexAuthPath, claudeCredsPath
 	configPath = filepath.Join(dir, "credentials.json")
 	codexAuthPath = filepath.Join(dir, "auth.json")
-	t.Cleanup(func() { configPath, codexAuthPath = oldCfg, oldCodex })
+	claudeCredsPath = filepath.Join(dir, "claude-creds.json")
+	t.Cleanup(func() {
+		configPath, codexAuthPath, claudeCredsPath = oldCfg, oldCodex, oldClaude
+	})
 	for _, k := range []string{
 		"ZAI_API_KEY", "MINIMAX_API_KEY", "OPENROUTER_API_KEY",
 		"ELEVENLABS_API_KEY", "MESHY_API_KEY",
@@ -118,5 +121,26 @@ func TestResolveChainBadConfig(t *testing.T) {
 	}
 	if c.MeshyKey != "env-meshy" {
 		t.Errorf("meshy: %q, want env-meshy", c.MeshyKey)
+	}
+}
+
+func TestClaudeTokenFromFile(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "creds.json")
+
+	if got := claudeTokenFromFile(filepath.Join(dir, "missing.json")); got != "" {
+		t.Errorf("missing file: got %q, want empty", got)
+	}
+	if err := os.WriteFile(p, []byte(`{"claudeAiOauth":{"accessToken":"tok-cc","refreshToken":"x"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := claudeTokenFromFile(p); got != "tok-cc" {
+		t.Errorf("parsed: got %q, want tok-cc", got)
+	}
+	if err := os.WriteFile(p, []byte(`not json`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := claudeTokenFromFile(p); got != "" {
+		t.Errorf("garbage: got %q, want empty", got)
 	}
 }
