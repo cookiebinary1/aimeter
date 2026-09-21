@@ -1,0 +1,29 @@
+# Compiled binary
+/aimeter
+/aimeter-*
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test artifacts
+*.test
+*.out
+coverage.out
+*.coverprofile
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Go workspace files
+go.work
+go.work.sum
+
+# Build / distribution
+dist/
+build/
+*.tar.gz
