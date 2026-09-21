@@ -577,7 +577,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		return m, nil
+		// Repaint from scratch: a shrunk window otherwise keeps stale rows
+		// from the taller frame on screen.
+		return m, tea.ClearScreen
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "esc", "ctrl+c":
@@ -606,8 +608,18 @@ func fmtClock(t time.Time) string {
 
 func (m model) View() string {
 	w := m.width
-	if w <= 0 || w > 100 {
+	if w <= 0 {
+		w = 101
+	}
+	// Never fill the terminal's last column: a line exactly as wide as the
+	// window triggers the auto-margin wrap, and the wrapped tail survives as
+	// a duplicate row when the window is resized.
+	w--
+	if w > 100 {
 		w = 100
+	}
+	if w < 20 {
+		w = 20
 	}
 	var b strings.Builder
 

@@ -53,15 +53,17 @@ func TestRenderPanelNeverOverflowsOrWraps(t *testing.T) {
 	}
 }
 
-// The whole frame (header, panels, footer) must fit too.
-func TestViewNeverOverflows(t *testing.T) {
-	for _, w := range []int{24, 30, 40, 50, 60, 80, 100} {
+// The whole frame must fit with the last column left free: a line exactly as
+// wide as the terminal wraps, and the wrapped tail survives a resize as a
+// duplicated row.
+func TestViewLeavesLastColumnFree(t *testing.T) {
+	for _, w := range []int{30, 40, 46, 50, 60, 80, 100, 120} {
 		m := initialModel(Creds{})
 		m.width, m.panels, m.loading = w, []Panel{widePanel()}, false
 		m.last, m.now = time.Now().Add(-30*time.Second), time.Now()
 		for _, line := range strings.Split(m.View(), "\n") {
-			if got := visualWidth(line); got > w {
-				t.Errorf("width %d: line renders %d cells (+%d): %q", w, got, got-w, line)
+			if got := visualWidth(line); got > w-1 {
+				t.Errorf("width %d: line renders %d cells (max %d): %q", w, got, w-1, line)
 			}
 		}
 	}
