@@ -27,3 +27,6 @@ go.work.sum
 dist/
 build/
 *.tar.gz
+
+# GoReleaser output
+dist/

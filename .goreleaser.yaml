@@ -1,0 +1,67 @@
+version: 2
+
+project_name: aimeter
+
+before:
+  hooks:
+    # No `go mod tidy` here: tidy ignores the `omp` build tag and would drop
+    # modernc.org/sqlite, breaking that optional build.
+    - go test ./...
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - README.md
+      - LICENSE
+      - CONTRIBUTING.md
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+brews:
+  - name: aimeter
+    repository:
+      owner: cookiebinary1
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: https://github.com/cookiebinary1/aimeter
+    description: Terminal dashboard for AI provider usage and quota limits
+    license: MIT
+    # Prebuilt binaries: no Go toolchain needed to install.
+    test: |
+      assert_match version.to_s, shell_output("#{bin}/aimeter -version")
+    caveats: |
+      aimeter reads credentials from the environment, ~/.config/aimeter/credentials.json,
+      the macOS keychain, and the native stores of Codex and Claude Code.
+      Run `aimeter -show-creds` to see where each provider resolved from.
+
+release:
+  footer: |
+    ## Install
+
+    ```sh
+    brew install cookiebinary1/tap/aimeter
+    # or
+    go install github.com/cookiebinary1/aimeter@latest
+    ```

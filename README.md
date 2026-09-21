@@ -34,6 +34,8 @@ Refresh interval is 90 seconds.
 ## Install
 
 ```sh
+brew install cookiebinary1/tap/aimeter
+# or, with a Go toolchain:
 go install github.com/cookiebinary1/aimeter@latest
 ```
 
