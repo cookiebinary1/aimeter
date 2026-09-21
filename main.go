@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"strings"
@@ -236,9 +237,19 @@ func fetchZai(ctx context.Context, c Creds) ([]Gauge, string, error) {
 	}
 	note := ""
 	if j.Data.Level != "" {
-		note = "GLM Coding " + strings.ToUpper(j.Data.Level[:1]) + j.Data.Level[1:]
+		note = "GLM Coding " + titleCase(j.Data.Level)
 	}
 	return gs, note, nil
+}
+
+// titleCase upper-cases the first letter of a plan name. Providers send these
+// lower-cased ("lite", "starter"), and an absent plan must stay absent rather
+// than panic on an empty string.
+func titleCase(s string) string {
+	if s == "" {
+		return ""
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
 }
 
 func zaiLabel(unit, number int) string {
@@ -376,7 +387,7 @@ func fetchElevenLabs(ctx context.Context, c Creds) ([]Gauge, string, error) {
 		Reset:  rp,
 		Window: 30 * 24 * time.Hour, // monthly cycle (approx)
 		Detail: fmt.Sprintf("%d / %d chars", j.CharacterCount, j.CharacterLimit),
-	}}, strings.ToUpper(j.Tier[:1]) + j.Tier[1:], nil
+	}}, titleCase(j.Tier), nil
 }
 
 func fetchMeshy(ctx context.Context, c Creds) ([]Gauge, string, error) {
@@ -476,7 +487,7 @@ func bar(p float64, width int, color lipgloss.Color) string {
 	if width < 3 {
 		width = 3
 	}
-	filled := int(mathRound(p / 100 * float64(width)))
+	filled := int(math.Round(p / 100 * float64(width)))
 	if filled < 0 {
 		filled = 0
 	}
@@ -485,13 +496,6 @@ func bar(p float64, width int, color lipgloss.Color) string {
 	}
 	return lipgloss.NewStyle().Foreground(color).Render(strings.Repeat("█", filled)) +
 		lipgloss.NewStyle().Foreground(lipgloss.Color("238")).Render(strings.Repeat("░", width-filled))
-}
-
-func mathRound(v float64) float64 {
-	if v < 0 {
-		return -float64(int(-v + 0.5))
-	}
-	return float64(int(v + 0.5))
 }
 
 func panelColor(p Panel) (lipgloss.Color, bool) {
@@ -542,13 +546,21 @@ type model struct {
 	now      time.Time
 	loading  bool
 	interval time.Duration
+	// gen identifies the current refresh chain. Every manual refresh starts a
+	// new one, so the timer armed by the previous chain is ignored instead of
+	// running a second fetch loop in parallel — without it each "r" press
+	// permanently doubles the auto-refresh rate.
+	gen int
+	// static marks a one-shot render (-once): no key hints, no refresh timer.
+	static bool
 }
 
-type tickMsg struct{}
+type tickMsg struct{ gen int }
 type clockMsg time.Time
 type fetchedMsg struct {
 	panels []Panel
 	at     time.Time
+	gen    int
 }
 
 func initialModel(c Creds) model {
@@ -556,12 +568,12 @@ func initialModel(c Creds) model {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(fetchCmd(m.creds), clockCmd())
+	return tea.Batch(fetchCmd(m.creds, m.gen), clockCmd())
 }
 
-func fetchCmd(c Creds) tea.Cmd {
+func fetchCmd(c Creds, gen int) tea.Cmd {
 	return func() tea.Msg {
-		return fetchedMsg{panels: fetchAll(c), at: time.Now()}
+		return fetchedMsg{panels: fetchAll(c), at: time.Now(), gen: gen}
 	}
 }
 
@@ -569,8 +581,8 @@ func clockCmd() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return clockMsg(t) })
 }
 
-func refreshTick(d time.Duration) tea.Cmd {
-	return tea.Tick(d, func(t time.Time) tea.Msg { return tickMsg{} })
+func refreshTick(d time.Duration, gen int) tea.Cmd {
+	return tea.Tick(d, func(t time.Time) tea.Msg { return tickMsg{gen: gen} })
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -586,15 +598,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "r":
 			m.loading = true
-			return m, fetchCmd(m.creds)
+			m.gen++
+			return m, fetchCmd(m.creds, m.gen)
 		}
 	case fetchedMsg:
+		if msg.gen != m.gen {
+			return m, nil // superseded by a manual refresh
+		}
 		m.panels = msg.panels
 		m.last = msg.at
 		m.loading = false
-		return m, refreshTick(m.interval)
+		return m, refreshTick(m.interval, m.gen)
 	case tickMsg:
-		return m, fetchCmd(m.creds)
+		if msg.gen != m.gen {
+			return m, nil // timer from an abandoned refresh chain
+		}
+		return m, fetchCmd(m.creds, m.gen)
 	case clockMsg:
 		m.now = time.Time(msg)
 		return m, clockCmd()
@@ -641,6 +660,15 @@ func (m model) View() string {
 		b.WriteString(dimStyle.Render("  loading…") + "\n")
 	}
 
+	// -once has no key handling and no timer, so its footer states only when
+	// the snapshot was taken.
+	if m.static {
+		if !m.last.IsZero() && w >= 34 {
+			b.WriteString(placeBetween("", dimStyle.Render("snapshot "+fmtClock(m.last)), w))
+		}
+		return strings.TrimRight(b.String(), "\n")
+	}
+
 	footer := dimStyle.Render("r refresh · q quit")
 	var fr string
 	if !m.last.IsZero() {
@@ -680,8 +708,8 @@ type frameLayout struct {
 
 const (
 	rowIndent    = 2
-	rowPct       = 5   // leading space plus up to "100%"
-	preferredBar = 26  // captions never squeeze the bar below this
+	rowPct       = 5  // leading space plus up to "100%"
+	preferredBar = 26 // captions never squeeze the bar below this
 	minBar       = 8
 	maxFrame     = 220 // beyond this the eye can no longer track a row
 )
@@ -833,7 +861,7 @@ func truncateCells(s string, n int) string {
 // thinBar is a half-height bar for window progress — the upper half of the
 // row, so it optically continues the usage bar above it.
 func thinBar(p float64, width int) string {
-	filled := int(mathRound(p / 100 * float64(width)))
+	filled := int(math.Round(p / 100 * float64(width)))
 	if filled < 0 {
 		filled = 0
 	}
@@ -905,6 +933,10 @@ func main() {
 		m.last = time.Now()
 		m.loading = false
 		m.now = time.Now()
+		// Bubble Tea would deliver a WindowSizeMsg; without the event loop the
+		// size has to be asked for, or -once always prints a 100-column frame.
+		m.width = terminalWidth()
+		m.static = true
 		fmt.Println(m.View())
 		return
 	}
@@ -920,4 +952,14 @@ func main() {
 // CI, cron) means plain output instead.
 func isInteractive() bool {
 	return term.IsTerminal(os.Stdin.Fd()) && term.IsTerminal(os.Stdout.Fd())
+}
+
+// terminalWidth reports the width of the output terminal, or 0 when stdout is
+// not a terminal, which makes View fall back to its default frame.
+func terminalWidth() int {
+	w, _, err := term.GetSize(os.Stdout.Fd())
+	if err != nil {
+		return 0
+	}
+	return w
 }

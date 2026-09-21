@@ -19,6 +19,9 @@ coverage.out
 .vscode/
 *.swp
 
+# Local credentials (source only; runtime lives at ~/.config/aimeter/credentials.json)
+/credentials.json
+
 # Go workspace files
 go.work
 go.work.sum

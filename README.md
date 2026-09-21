@@ -51,9 +51,11 @@ go build -o ~/.local/bin/aimeter .
 
 Builds and runs on macOS, Linux and Windows (amd64 and arm64).
 
-The TUI is width-aware: on narrow terminals it drops the grey detail/reset
-captions and grows the bars to fill the row instead of wrapping, so the panels
-stay readable instead of spilling over.
+The TUI is width-aware: every bar in the frame shares one width and one start
+column, so the panels line up vertically whatever a single row's caption says.
+A wide terminal spends the extra columns on the bars (up to a 220-column
+frame); a narrow one drops the grey detail/reset captions and grows the bars to
+fill the row instead of wrapping.
 
 <img src="docs/screenshot-narrow.png" alt="aimeter in a narrow terminal" width="380">
 
