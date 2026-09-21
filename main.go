@@ -349,10 +349,17 @@ func fetchOpenRouter(ctx context.Context, c Creds) ([]Gauge, string, error) {
 		return nil, "", fmt.Errorf("no credits")
 	}
 	used := d.TotalUsage / d.TotalCredits * 100
+	// An account can run slightly past its credit balance (usage is settled
+	// asynchronously). The gauge tops out at 100% — the schema promises 0-100
+	// — while the detail states the overrun instead of a negative "left".
+	detail := fmt.Sprintf("$%.2f / $%.2f · $%.2f left", d.TotalUsage, d.TotalCredits, d.TotalCredits-d.TotalUsage)
+	if d.TotalUsage > d.TotalCredits {
+		detail = fmt.Sprintf("$%.2f / $%.2f · $%.2f over", d.TotalUsage, d.TotalCredits, d.TotalUsage-d.TotalCredits)
+	}
 	return []Gauge{{
 		Label:  "credits",
-		Used:   used,
-		Detail: fmt.Sprintf("$%.2f / $%.2f · $%.2f left", d.TotalUsage, d.TotalCredits, d.TotalCredits-d.TotalUsage),
+		Used:   clampPct(used),
+		Detail: detail,
 	}}, "pay-as-you-go", nil
 }
 
@@ -377,13 +384,20 @@ func fetchElevenLabs(ctx context.Context, c Creds) ([]Gauge, string, error) {
 		t := time.Unix(j.NextReset, 0)
 		rp = &t
 	}
-	pct := 0.0
-	if j.CharacterLimit > 0 {
-		pct = float64(j.CharacterCount) / float64(j.CharacterLimit) * 100
+	// A tierless/unmetered account reports no character limit. There is no
+	// percentage to draw then, so the gauge becomes balance-only (Used < 0)
+	// rather than a reassuring empty green bar.
+	if j.CharacterLimit <= 0 {
+		return []Gauge{{
+			Label:  "chars",
+			Used:   -1,
+			Reset:  rp,
+			Detail: fmt.Sprintf("%d chars used · no limit reported", j.CharacterCount),
+		}}, titleCase(j.Tier), nil
 	}
 	return []Gauge{{
 		Label:  "chars",
-		Used:   pct,
+		Used:   float64(j.CharacterCount) / float64(j.CharacterLimit) * 100,
 		Reset:  rp,
 		Window: 30 * 24 * time.Hour, // monthly cycle (approx)
 		Detail: fmt.Sprintf("%d / %d chars", j.CharacterCount, j.CharacterLimit),

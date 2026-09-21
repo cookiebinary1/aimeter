@@ -60,6 +60,57 @@ func TestElevenLabsTierIsCapitalised(t *testing.T) {
 	}
 }
 
+// An account with no character limit has no percentage to show. The gauge must
+// go balance-only (Used < 0) instead of rendering a reassuring empty bar that
+// reads as "0% used".
+func TestElevenLabsWithoutLimitIsBalanceOnly(t *testing.T) {
+	withStub(t, `{"tier":"free","character_count":1200,"character_limit":0}`)
+
+	gs, _, err := fetchElevenLabs(context.Background(), Creds{EleKey: "k"})
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if len(gs) != 1 {
+		t.Fatalf("gauges = %+v, want one", gs)
+	}
+	if gs[0].Used >= 0 {
+		t.Errorf("Used = %v, want negative (balance-only)", gs[0].Used)
+	}
+	if !strings.Contains(gs[0].Detail, "1200 chars used") {
+		t.Errorf("detail = %q, want the raw character count", gs[0].Detail)
+	}
+}
+
+// Usage settles asynchronously, so an account can end up past its balance.
+// The gauge stays inside the documented 0-100 range and the detail says how
+// far over it went, rather than reporting a negative amount "left".
+func TestOpenRouterOverrunStaysInRange(t *testing.T) {
+	withStub(t, `{"data":{"total_credits":10,"total_usage":12.5}}`)
+
+	gs, _, err := fetchOpenRouter(context.Background(), Creds{OpenRouter: "k"})
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if gs[0].Used != 100 {
+		t.Errorf("Used = %v, want 100", gs[0].Used)
+	}
+	if !strings.Contains(gs[0].Detail, "$2.50 over") {
+		t.Errorf("detail = %q, want the overrun", gs[0].Detail)
+	}
+}
+
+func TestOpenRouterNormalBalance(t *testing.T) {
+	withStub(t, `{"data":{"total_credits":10,"total_usage":1.22}}`)
+
+	gs, _, err := fetchOpenRouter(context.Background(), Creds{OpenRouter: "k"})
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if !strings.Contains(gs[0].Detail, "$8.78 left") {
+		t.Errorf("detail = %q, want the remaining balance", gs[0].Detail)
+	}
+}
+
 // Z.AI keeps its product prefix in front of the capitalised plan level.
 func TestZaiNoteKeepsProductPrefix(t *testing.T) {
 	withStub(t, `{"success":true,"data":{"level":"lite","limits":[

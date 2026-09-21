@@ -35,6 +35,9 @@ jobs:
       - name: test
         run: go test ./...
 
+      - name: test (omp build tag)
+        run: go test -tags omp ./...
+
       - name: build
         run: go build .
 

@@ -129,6 +129,11 @@ func claudeTokenFromFile(path string) string {
 	if err != nil {
 		return ""
 	}
+	// Same warning as for our own config: this file holds a bearer token in
+	// plaintext, and Claude Code does not always create it with 0600.
+	if fi, err := os.Stat(path); err == nil && fi.Mode().Perm()&0o077 != 0 {
+		fmt.Fprintf(os.Stderr, "aimeter: warning: %s is group/world readable — chmod 600 it\n", path)
+	}
 	var kc struct {
 		ClaudeAiOauth struct {
 			AccessToken string `json:"accessToken"`

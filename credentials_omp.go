@@ -18,7 +18,7 @@ import (
 
 // ompFallback fills providers still missing after env/config/keychain.
 func ompFallback(c *Creds, src map[string]string) {
-	rows := ompCredentials(ompDBPath())
+	rows := ompCredentials(ompDBPath)
 	if rows == nil {
 		rows = map[string]any{}
 	}
@@ -55,7 +55,10 @@ func ompFallback(c *Creds, src map[string]string) {
 	}
 }
 
-func ompDBPath() string {
+// Injectable for tests, matching configPath and friends.
+var ompDBPath = defaultOMPDBPath()
+
+func defaultOMPDBPath() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".omp", "agent", "agent.db")
 }
@@ -86,6 +89,11 @@ func ompCredentials(path string) map[string]any {
 		if json.Unmarshal([]byte(data), &v) == nil {
 			out[provider] = v
 		}
+	}
+	// A truncated read must not masquerade as "this provider has no entry":
+	// report nothing so the caller falls through to its other sources.
+	if rws.Err() != nil {
+		return nil
 	}
 	return out
 }
