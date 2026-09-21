@@ -611,7 +611,10 @@ func (m model) View() string {
 	}
 	var b strings.Builder
 
-	left := headerStyle.Render("⚡ aimeter") + dimStyle.Render(" · AI service status")
+	left := headerStyle.Render("⚡ aimeter")
+	if w >= 46 {
+		left += dimStyle.Render(" · AI service status")
+	}
 	right := dimStyle.Render(fmtClock(m.now))
 	b.WriteString(placeBetween(left, right, w))
 	b.WriteString("\n\n")
@@ -632,7 +635,13 @@ func (m model) View() string {
 		if left_ < 0 {
 			left_ = 0
 		}
-		fr = dimStyle.Render(fmt.Sprintf("auto-refresh in %ds · updated %s", left_, fmtClock(m.last)))
+		// Narrow terminals only get the clock; the full sentence would wrap.
+		switch {
+		case w >= 58:
+			fr = dimStyle.Render(fmt.Sprintf("auto-refresh in %ds · updated %s", left_, fmtClock(m.last)))
+		case w >= 34:
+			fr = dimStyle.Render(fmt.Sprintf("%ds · %s", left_, fmtClock(m.last)))
+		}
 	}
 	b.WriteString(placeBetween(footer, fr, w))
 	return b.String()
@@ -648,53 +657,87 @@ func placeBetween(l, r string, w int) string {
 
 func renderPanel(p Panel, w int) string {
 	color, isErr := panelColor(p)
+	// The box adds a border (1 cell each side) and padding (1 each side), so
+	// the usable content column is inner-2 — rows built any wider would wrap.
 	inner := w - 4
-	if inner < 40 {
-		inner = 40
+	if inner < 20 {
+		inner = 20
 	}
+	content := inner - 2
 
-	title := okDotStyle.Render("●") + " "
+	dot := okDotStyle.Render("●") + " "
 	if isErr {
-		title = errStyle.Render("●") + " "
+		dot = errStyle.Render("●") + " "
 	}
-	title += nameStyle.Render(p.Name)
-	if p.Note != "" {
+	title := dot + nameStyle.Render(truncateCells(p.Name, content-2))
+	if p.Note != "" && lipgloss.Width(title)+2+lipgloss.Width(p.Note) <= content {
 		title += dimStyle.Render("  " + p.Note)
 	}
-	title = lipgloss.NewStyle().Width(inner).Render(title)
+	title = lipgloss.NewStyle().MaxWidth(content).Width(content).Render(title)
 
 	var body string
 	if p.Err != nil {
-		body = errStyle.Render("  ✗ " + p.Err.Error())
+		body = errStyle.Render("  ✗ " + truncateCells(p.Err.Error(), content-4))
 	} else {
+		// Row layout: indent + label column + bar + " " + "100%".
+		const indent = 2
+		const pct = 5 // leading space plus up to "100%"
+		label := 8
+		if content < 32 {
+			label = 5 // tight terminals get a short label column
+		}
+		rowBudget := content - indent - label - pct
+		if rowBudget < 3 {
+			rowBudget = 3
+		}
 		var rows []string
 		for _, g := range p.Items {
 			if g.Used < 0 {
-				rows = append(rows, lipgloss.NewStyle().Width(inner).Render("  "+
-					lipgloss.NewStyle().Width(8).Render(g.Label)+dimStyle.Render(g.Detail)))
+				rows = append(rows, lipgloss.NewStyle().MaxWidth(content).Width(content).Render("  "+
+					lipgloss.NewStyle().Width(label).Render(truncateCells(g.Label, label))+
+					dimStyle.Render(truncateCells(g.Detail, content-2-label))))
 				continue
 			}
 			c := pctColor(g.Used)
-			line := lipgloss.NewStyle().Width(8).Render(g.Label) +
-				bar(g.Used, 26, c) + " " +
-				pctStyle.Foreground(c).Render(fmt.Sprintf("%3.0f%%", clampPct(g.Used)))
 			extras := []string{}
 			if g.Detail != "" {
-				extras = append(extras, dimStyle.Render(g.Detail))
+				extras = append(extras, g.Detail)
 			}
 			if rt := resetText(g); rt != "" {
-				extras = append(extras, dimStyle.Render(rt))
+				extras = append(extras, rt)
 			}
-			if len(extras) > 0 {
-				line += " " + strings.Join(extras, "  ")
+			// Keep captions only while a meaningful bar still fits; the bar is
+			// the point of the panel, the grey text is the first thing to go.
+			minBar := 8
+			if rowBudget < 20 {
+				minBar = 3
 			}
-			rows = append(rows, lipgloss.NewStyle().Width(inner).Render("  "+line))
+			var renderedExtras []string
+			extrasWidth := 0
+			for _, e := range extras {
+				cost := lipgloss.Width(e) + 2
+				if rowBudget-extrasWidth-cost < minBar {
+					break
+				}
+				renderedExtras = append(renderedExtras, dimStyle.Render(e))
+				extrasWidth += cost
+			}
+			barWidth := rowBudget - extrasWidth
+			line := lipgloss.NewStyle().Width(label).Render(truncateCells(g.Label, label)) +
+				bar(g.Used, barWidth, c) + " " +
+				pctStyle.Foreground(c).Render(fmt.Sprintf("%3.0f%%", clampPct(g.Used)))
+			if len(renderedExtras) > 0 {
+				line += " " + strings.Join(renderedExtras, "  ")
+			}
+			rows = append(rows, lipgloss.NewStyle().MaxWidth(content).Width(content).Render("  "+line))
 			if tp, ok := timeElapsedPct(g); ok {
-				rows = append(rows, lipgloss.NewStyle().Width(inner).Render("  "+
-					strings.Repeat(" ", 8)+
-					thinBar(tp, 26)+" "+
-					timePctStyle.Render(fmt.Sprintf("%3.0f%%", tp))+
-					dimStyle.Render(" elapsed")))
+				row := strings.Repeat(" ", label) + thinBar(tp, barWidth) + " " +
+					timePctStyle.Render(fmt.Sprintf("%3.0f%%", tp))
+				// The " elapsed" caption is the first thing to go when tight.
+				if content >= 44 {
+					row += dimStyle.Render(" elapsed")
+				}
+				rows = append(rows, lipgloss.NewStyle().MaxWidth(content).Width(content).Render("  "+row))
 			}
 		}
 		body = strings.Join(rows, "\n")
@@ -717,6 +760,22 @@ func clampPct(p float64) float64 {
 		return 100
 	}
 	return p
+}
+
+// truncateCells cuts plain text to at most n printable cells, so a long name
+// or detail gets clipped instead of wrapping onto another row.
+func truncateCells(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	if lipgloss.Width(s) <= n {
+		return s
+	}
+	r := []rune(s)
+	for len(r) > 0 && lipgloss.Width(string(r)) > n {
+		r = r[:len(r)-1]
+	}
+	return string(r)
 }
 
 // thinBar is a half-height bar for window progress — the upper half of the

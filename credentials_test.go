@@ -36,7 +36,7 @@ func writeConfig(t *testing.T, body string) {
 
 // env beats config for the same provider; config fills the rest.
 func TestResolveChainEnvOverConfig(t *testing.T) {
-	dir := isolate(t)
+	isolate(t)
 	writeConfig(t, `{
 		"zai": {"api_key": "cfg-zai"},
 		"minimax": {"api_key": "cfg-mm"},
@@ -55,7 +55,6 @@ func TestResolveChainEnvOverConfig(t *testing.T) {
 	if c.OpenRouter != "cfg-or" || src["openrouter"] != "config" {
 		t.Errorf("openrouter: key=%q src=%q, want cfg-or/config", c.OpenRouter, src["openrouter"])
 	}
-	_ = dir
 }
 
 // missing config file degrades to env-only resolution, never errors.
@@ -75,7 +74,7 @@ func TestResolveChainNoConfig(t *testing.T) {
 
 // config can also carry the OAuth pairs; codex falls back to its auth.json.
 func TestResolveChainOAuth(t *testing.T) {
-	dir := isolate(t)
+	isolate(t)
 	writeConfig(t, `{
 		"anthropic": {"access_token": "tok-a", "email": "a@b.c"},
 		"codex": {"access_token": "tok-c", "account_id": "acct-1"}
@@ -89,11 +88,10 @@ func TestResolveChainOAuth(t *testing.T) {
 	if c.CodexToken != "tok-c" || c.CodexAcct != "acct-1" || src["codex"] != "config" {
 		t.Errorf("codex: token=%q acct=%q src=%q", c.CodexToken, c.CodexAcct, src["codex"])
 	}
-	_ = dir
 }
 
 func TestResolveChainCodexAuthFallback(t *testing.T) {
-	dir := isolate(t)
+	isolate(t)
 	writeConfig(t, `{}`)
 	if err := os.WriteFile(codexAuthPath, []byte(
 		`{"tokens":{"access_token":"live-tok","account_id":"live-acct"}}`), 0o600); err != nil {
@@ -105,7 +103,6 @@ func TestResolveChainCodexAuthFallback(t *testing.T) {
 	if c.CodexToken != "live-tok" || c.CodexAcct != "live-acct" || src["codex"] != "codex-auth.json" {
 		t.Errorf("codex: token=%q acct=%q src=%q", c.CodexToken, c.CodexAcct, src["codex"])
 	}
-	_ = dir
 }
 
 // unknown fields and a garbage file must not break resolution.

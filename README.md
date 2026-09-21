@@ -39,6 +39,9 @@ Or directly:
 go run .
 ```
 
+The TUI is width-aware: on narrow terminals it drops the grey detail/reset
+captions and grows the bars to fill the row instead of wrapping.
+
 ### Usage
 
 ```sh
