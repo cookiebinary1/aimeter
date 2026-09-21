@@ -631,8 +631,9 @@ func (m model) View() string {
 	b.WriteString(placeBetween(left, right, w))
 	b.WriteString("\n\n")
 
+	lay := computeLayout(m.panels, w)
 	for _, p := range m.panels {
-		b.WriteString(renderPanel(p, w))
+		b.WriteString(renderPanel(p, lay))
 		b.WriteString("\n")
 	}
 
@@ -667,15 +668,88 @@ func placeBetween(l, r string, w int) string {
 	return l + strings.Repeat(" ", gap) + r
 }
 
-func renderPanel(p Panel, w int) string {
-	color, isErr := panelColor(p)
-	// The box adds a border (1 cell each side) and padding (1 each side), so
-	// the usable content column is inner-2 — rows built any wider would wrap.
+// frameLayout is computed once for the whole frame so every bar starts and
+// ends in the same column, whatever a single panel's captions happen to say.
+type frameLayout struct {
+	inner   int // panel box width
+	content int // usable column inside border + padding
+	label   int // label column
+	bar     int // bar width, identical in every row
+	extras  int // caption column after the percentage; 0 hides captions
+}
+
+const (
+	rowIndent    = 2
+	rowPct       = 5  // leading space plus up to "100%"
+	preferredBar = 26 // captions never squeeze the bar below this
+	minBar       = 8
+	maxBar       = 40 // very wide terminals give the surplus to the captions
+)
+
+// computeLayout sizes the columns from the frame width and the widest caption
+// run any gauge actually needs, so short captions never leave the bars ragged
+// and one verbose row never shrinks every other bar.
+func computeLayout(panels []Panel, w int) frameLayout {
 	inner := w - 4
 	if inner < 20 {
 		inner = 20
 	}
-	content := inner - 2
+	l := frameLayout{inner: inner, content: inner - 2, label: 8}
+	if l.content < 32 {
+		l.label = 5
+	}
+
+	budget := l.content - rowIndent - l.label - rowPct
+	if budget < 3 {
+		budget = 3
+	}
+	l.bar = budget
+
+	want := 0
+	for _, p := range panels {
+		if p.Err != nil {
+			continue
+		}
+		for _, g := range p.Items {
+			if g.Used < 0 {
+				continue
+			}
+			if n := lipgloss.Width(captionText(g)); n > want {
+				want = n
+			}
+		}
+	}
+	if want == 0 || budget < minBar+8 {
+		return l // no captions to show, or no room for them at all
+	}
+
+	l.extras = min(want, budget-preferredBar)
+	if l.extras < 0 {
+		l.extras = 0
+	}
+	l.bar = budget - l.extras
+	if l.bar > maxBar {
+		l.extras += l.bar - maxBar
+		l.bar = maxBar
+	}
+	return l
+}
+
+// captionText joins a gauge's detail and reset text the way a row renders them.
+func captionText(g Gauge) string {
+	parts := []string{}
+	if g.Detail != "" {
+		parts = append(parts, g.Detail)
+	}
+	if rt := resetText(g); rt != "" {
+		parts = append(parts, rt)
+	}
+	return strings.Join(parts, "  ")
+}
+
+func renderPanel(p Panel, lay frameLayout) string {
+	color, isErr := panelColor(p)
+	content := lay.content
 
 	dot := okDotStyle.Render("●") + " "
 	if isErr {
@@ -691,63 +765,30 @@ func renderPanel(p Panel, w int) string {
 	if p.Err != nil {
 		body = errStyle.Render("  ✗ " + truncateCells(p.Err.Error(), content-4))
 	} else {
-		// Row layout: indent + label column + bar + " " + "100%".
-		const indent = 2
-		const pct = 5 // leading space plus up to "100%"
-		label := 8
-		if content < 32 {
-			label = 5 // tight terminals get a short label column
-		}
-		rowBudget := content - indent - label - pct
-		if rowBudget < 3 {
-			rowBudget = 3
-		}
 		var rows []string
 		for _, g := range p.Items {
 			if g.Used < 0 {
 				rows = append(rows, lipgloss.NewStyle().MaxWidth(content).Width(content).Render("  "+
-					lipgloss.NewStyle().Width(label).Render(truncateCells(g.Label, label))+
-					dimStyle.Render(truncateCells(g.Detail, content-2-label))))
+					lipgloss.NewStyle().Width(lay.label).Render(truncateCells(g.Label, lay.label))+
+					dimStyle.Render(truncateCells(g.Detail, content-rowIndent-lay.label))))
 				continue
 			}
 			c := pctColor(g.Used)
-			extras := []string{}
-			if g.Detail != "" {
-				extras = append(extras, g.Detail)
-			}
-			if rt := resetText(g); rt != "" {
-				extras = append(extras, rt)
-			}
-			// Keep captions only while a meaningful bar still fits; the bar is
-			// the point of the panel, the grey text is the first thing to go.
-			minBar := 8
-			if rowBudget < 20 {
-				minBar = 3
-			}
-			var renderedExtras []string
-			extrasWidth := 0
-			for _, e := range extras {
-				cost := lipgloss.Width(e) + 2
-				if rowBudget-extrasWidth-cost < minBar {
-					break
-				}
-				renderedExtras = append(renderedExtras, dimStyle.Render(e))
-				extrasWidth += cost
-			}
-			barWidth := rowBudget - extrasWidth
-			line := lipgloss.NewStyle().Width(label).Render(truncateCells(g.Label, label)) +
-				bar(g.Used, barWidth, c) + " " +
+			line := lipgloss.NewStyle().Width(lay.label).Render(truncateCells(g.Label, lay.label)) +
+				bar(g.Used, lay.bar, c) + " " +
 				pctStyle.Foreground(c).Render(fmt.Sprintf("%3.0f%%", clampPct(g.Used)))
-			if len(renderedExtras) > 0 {
-				line += " " + strings.Join(renderedExtras, "  ")
+			if lay.extras > 0 {
+				if cap := truncateCells(captionText(g), lay.extras-1); cap != "" {
+					line += " " + dimStyle.Render(cap)
+				}
 			}
 			rows = append(rows, lipgloss.NewStyle().MaxWidth(content).Width(content).Render("  "+line))
 			if tp, ok := timeElapsedPct(g); ok {
-				row := strings.Repeat(" ", label) + thinBar(tp, barWidth) + " " +
+				row := strings.Repeat(" ", lay.label) + thinBar(tp, lay.bar) + " " +
 					timePctStyle.Render(fmt.Sprintf("%3.0f%%", tp))
-				// The " elapsed" caption is the first thing to go when tight.
-				if content >= 44 {
-					row += dimStyle.Render(" elapsed")
+				// The " elapsed" caption rides in the same column as the others.
+				if lay.extras >= 9 {
+					row += " " + dimStyle.Render("elapsed")
 				}
 				rows = append(rows, lipgloss.NewStyle().MaxWidth(content).Width(content).Render("  "+row))
 			}
@@ -759,7 +800,7 @@ func renderPanel(p Panel, w int) string {
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(color).
 		Padding(0, 1).
-		Width(inner).
+		Width(lay.inner).
 		Render(title + "\n" + body)
 	return box
 }

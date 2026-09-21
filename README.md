@@ -62,25 +62,83 @@ stay readable instead of spilling over.
 ```sh
 aimeter              # TUI dashboard (q quit, r refresh, auto-refresh 90s)
 aimeter -once        # render the dashboard once, no TUI
-aimeter -plain       # one " | "-separated line per gauge — for bash scripts
-aimeter -json        # machine-readable JSON — for scripts and AI agents
+aimeter -plain       # Markdown table — for scripts, logs and agents
+aimeter -json        # machine-readable JSON — for programs
 aimeter -show-creds  # which source each credential resolved from
+aimeter -version     # version string
 ```
 
-`-plain` example line:
+If `aimeter` is run with no flags but **without an interactive terminal**
+(piped stdout/stdin, CI, cron, deployment scripts), it auto-detects this and
+behaves as `-plain` — the same data, log-friendly. Explicit flags always
+override.
+
+### `-plain`: Markdown table
 
 ```text
-Z.AI | GLM Coding Lite | 5h | 60% | 1207 / 2000 credits | resets in 3h 53m
+| Provider     | Plan            | Window  | Used | Detail                      | Resets in |
+| ------------ | --------------- | ------- | ---- | --------------------------- | --------- |
+| Anthropic    |                 | 5h      | 56%  |                             | 46m       |
+| Anthropic    |                 | 7d      | 7%   |                             | 6d 7h     |
+| OpenAI Codex | prolite         | 7d      | 14%  |                             | 5d 17h    |
+| Z.AI         | GLM Coding Lite | 5h      | 82%  | 1659 / 2000 credits         | 2h 42m    |
+| Z.AI         | GLM Coding Lite | 7d      | 48%  | 4806 / 10000 credits        | 45h 41m   |
+| MiniMax Code | Coding Plan     | 5h      | 21%  |                             | 56m       |
+| MiniMax Code | Coding Plan     | 7d      | 3%   |                             | 6d 4h     |
+| OpenRouter   | pay-as-you-go   | credits | 12%  | $1.22 / $10.00 · $8.78 left |           |
+| ElevenLabs   | Starter         | chars   | 13%  | 11602 / 89240 chars         | 17d 21h   |
+| Meshy        | 3D generation   | credits |      | 5500 credits left           |           |
+```
+
+The columns are fixed (`Provider`, `Plan`, `Window`, `Used`, `Detail`,
+`Resets in`), so the output is stable to parse by column index, renders as a
+real table when pasted into an issue, PR or chat, and stays readable as plain
+text in a log. Balance-only services leave `Used` empty; a failed provider
+puts its message in `Detail`. Pipes inside values are escaped.
+
+### Automation and AI agents
+
+Both machine modes are built for feeding other tools: a coding agent, a cron
+job or a deployment step can run aimeter and branch on real numbers instead of
+guessing whether a quota is about to run out.
+
+Give an agent the table directly — it needs no parsing instructions, because
+the header explains every column:
+
+```sh
+aimeter -plain | llm "Which provider is closest to its limit, and how long \
+until it resets? Answer in one sentence."
+```
+
+Gate work on remaining quota before starting an expensive run:
+
+```sh
+# Refuse to start if the 5h Anthropic window is above 90%
+used=$(aimeter -json | jq -r '.[] | select(.provider=="Anthropic")
+                              | .gauges[] | select(.label=="5h") | .used')
+if (( ${used%.*} > 90 )); then
+  echo "Anthropic 5h window at ${used}% — deferring the batch job"
+  exit 1
+fi
+```
+
+Fail a healthcheck when any provider errors, e.g. after rotating a key:
+
+```sh
+aimeter -json | jq -e '[.[] | select(.error != null)] | length == 0' > /dev/null \
+  || { echo "a provider failed to report"; exit 1; }
+```
+
+Post the current state to Slack every morning from cron — the Markdown table
+renders as-is:
+
+```sh
+0 9 * * * aimeter -plain | slack-post '#ops'
 ```
 
 `-json` gauge fields: `label`, `used` (0-100, or -1 for balance-only),
 `detail`, `resets_at` (RFC 3339), `resets_in`, `window`. A failed provider
 carries an `error` field instead of gauges.
-
-If `aimeter` is run with no flags but **without an interactive terminal**
-(piped stdout/stdin, CI, cron, deployment scripts), it auto-detects this and
-behaves as `-plain` — the same data, log-friendly. Explicit flags always
-override: `-json`, `-once`, `-show-creds`.
 
 ## Configuration
 

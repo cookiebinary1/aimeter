@@ -33,6 +33,38 @@ func widePanel() Panel {
 	}}
 }
 
+// terse has a much shorter caption than widePanel, so a frame containing both
+// exposes whether bar widths are decided per row or once per frame.
+func tersePanel() Panel {
+	reset := time.Now().Add(90 * time.Minute)
+	return Panel{Name: "Anthropic", Items: []Gauge{
+		{Label: "5h", Used: 20, Reset: &reset, Window: 5 * time.Hour},
+	}}
+}
+
+// renderOne renders a single panel at frame width w, as View would.
+func renderOne(p Panel, w int) string {
+	return renderPanel(p, computeLayout([]Panel{p}, w))
+}
+
+// barRuns returns the length of every usage/elapsed bar in a rendered frame.
+func barRuns(s string) []int {
+	var runs []int
+	for _, line := range strings.Split(s, "\n") {
+		n := 0
+		for _, r := range line {
+			switch r {
+			case '█', '░', '▀':
+				n++
+			}
+		}
+		if n > 0 {
+			runs = append(runs, n)
+		}
+	}
+	return runs
+}
+
 // A panel must fit its terminal without overflowing AND without wrapping:
 // narrow windows drop the grey captions instead of pushing them to new lines.
 // Expected line count: top border + title + (bar row + elapsed row) + balance
@@ -40,10 +72,10 @@ func widePanel() Panel {
 func TestRenderPanelNeverOverflowsOrWraps(t *testing.T) {
 	const wantLines = 6
 	for _, w := range []int{24, 30, 40, 50, 60, 80, 100} {
-		lines := strings.Split(renderPanel(widePanel(), w), "\n")
+		lines := strings.Split(renderOne(widePanel(), w), "\n")
 		if len(lines) != wantLines {
 			t.Errorf("width %d: %d lines, want %d (content wrapped):\n%s",
-				w, len(lines), wantLines, renderPanel(widePanel(), w))
+				w, len(lines), wantLines, renderOne(widePanel(), w))
 		}
 		for _, line := range lines {
 			if got := visualWidth(line); got > w {
@@ -71,7 +103,7 @@ func TestViewLeavesLastColumnFree(t *testing.T) {
 
 // Wide terminals must keep the detail and reset captions.
 func TestWideKeepsCaptions(t *testing.T) {
-	out := renderPanel(widePanel(), 100)
+	out := renderOne(widePanel(), 100)
 	for _, want := range []string{"1482 / 2000 credits", "resets in", "elapsed"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("wide render lost %q", want)
@@ -81,7 +113,7 @@ func TestWideKeepsCaptions(t *testing.T) {
 
 // Narrow terminals drop those captions but keep the bar and the percentage.
 func TestNarrowDropsCaptions(t *testing.T) {
-	out := renderPanel(widePanel(), 34)
+	out := renderOne(widePanel(), 34)
 	for _, unwanted := range []string{"1482 / 2000 credits", "resets in"} {
 		if strings.Contains(out, unwanted) {
 			t.Errorf("narrow render kept %q", unwanted)
@@ -89,5 +121,45 @@ func TestNarrowDropsCaptions(t *testing.T) {
 	}
 	if !strings.Contains(out, "74%") || !strings.Contains(out, "█") {
 		t.Errorf("narrow render lost the bar or percentage:\n%s", out)
+	}
+}
+
+// Every bar in a frame must share one width, so the bars, percentages and
+// captions line up vertically even when one panel's caption is much longer
+// than another's. A verbose row must not shrink the bars of quiet rows.
+func TestBarsShareOneWidthAcrossFrame(t *testing.T) {
+	panels := []Panel{widePanel(), tersePanel()}
+	for _, w := range []int{60, 80, 100, 140} {
+		m := initialModel(Creds{})
+		m.width, m.panels, m.loading = w, panels, false
+		m.last, m.now = time.Now().Add(-30*time.Second), time.Now()
+
+		runs := barRuns(m.View())
+		if len(runs) < 4 {
+			t.Fatalf("width %d: expected at least 4 bars, got %d", w, len(runs))
+		}
+		for i, n := range runs {
+			if n != runs[0] {
+				t.Errorf("width %d: bar %d is %d cells, first is %d — bars are ragged",
+					w, i, n, runs[0])
+			}
+		}
+		if runs[0] < minBar {
+			t.Errorf("width %d: bar shrank to %d, below the %d minimum", w, runs[0], minBar)
+		}
+	}
+}
+
+// A long caption may not squeeze the bar below the preferred width while
+// there is still room; captions get truncated into their column instead.
+func TestCaptionsNeverSqueezeBarBelowPreferred(t *testing.T) {
+	reset := time.Now().Add(3 * time.Hour)
+	verbose := Panel{Name: "Verbose", Items: []Gauge{{
+		Label: "5h", Used: 50, Reset: &reset, Window: 5 * time.Hour,
+		Detail: "a very long caption that would happily eat the whole row if allowed",
+	}}}
+	lay := computeLayout([]Panel{verbose}, 100)
+	if lay.bar < preferredBar {
+		t.Errorf("bar is %d cells, want at least the preferred %d", lay.bar, preferredBar)
 	}
 }

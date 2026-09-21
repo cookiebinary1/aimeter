@@ -1,67 +1,102 @@
 package main
 
-// Script- and agent-facing output modes: -plain prints one " | "-separated
-// line per gauge (no TUI, no colors, no box drawing), -json prints the same
-// data machine-readable. Both share fetchAll with the TUI, so the numbers are
-// identical across modes.
+// Script- and agent-facing output modes: -plain prints a GitHub-flavoured
+// Markdown table (one row per gauge), -json prints the same data as JSON.
+// Both share fetchAll with the TUI, so the numbers are identical across modes.
 
 import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 )
 
-// renderPlain writes one line per gauge, " | "-separated:
+// plainColumns is the fixed schema of the -plain table. Fixed columns keep the
+// output parseable by column index and pasteable into issues or agent prompts.
+var plainColumns = []string{"Provider", "Plan", "Window", "Used", "Detail", "Resets in"}
+
+// renderPlain writes all panels as one Markdown table:
 //
-//	Provider | note | label | 42% | detail | resets in 1h 58m
-//	Provider | ERROR: message
+//	| Provider | Plan            | Window | Used | Detail              | Resets in |
+//	| -------- | --------------- | ------ | ---- | ------------------- | --------- |
+//	| Z.AI     | GLM Coding Lite | 5h     | 82%  | 1659 / 2000 credits | 2h 44m    |
 //
-// Gauges with unknown usage (Used < 0, e.g. a plain balance) omit the percent.
+// Cells are padded so the raw text also reads as a table in a terminal.
+// Gauges with unknown usage (Used < 0, e.g. a plain balance) leave Used empty;
+// a failed provider carries its message in the Detail column.
 func renderPlain(w io.Writer, panels []Panel) {
+	rows := [][]string{}
 	for _, p := range panels {
 		if p.Err != nil {
-			fmt.Fprintf(w, "%s | ERROR: %s\n", p.Name, p.Err.Error())
+			rows = append(rows, []string{p.Name, p.Note, "", "", "ERROR: " + p.Err.Error(), ""})
 			continue
 		}
-		head := p.Name
-		if p.Note != "" {
-			head += " | " + p.Note
+		if len(p.Items) == 0 {
+			rows = append(rows, []string{p.Name, p.Note, "", "", "(no data)", ""})
+			continue
 		}
 		for _, g := range p.Items {
-			parts := []string{head, g.Label}
+			used := ""
 			if g.Used >= 0 {
-				parts = append(parts, fmt.Sprintf("%.0f%%", clampPct(g.Used)))
+				used = fmt.Sprintf("%.0f%%", clampPct(g.Used))
 			}
-			if g.Detail != "" {
-				parts = append(parts, g.Detail)
-			}
-			if rt := resetText(g); rt != "" {
-				parts = append(parts, rt)
-			}
-			fmt.Fprintln(w, joinNonEmpty(parts, " | "))
+			rows = append(rows, []string{p.Name, p.Note, g.Label, used, g.Detail, resetsIn(g)})
 		}
-		if len(p.Items) == 0 {
-			fmt.Fprintf(w, "%s | (no data)\n", head)
+	}
+
+	widths := make([]int, len(plainColumns))
+	for i, h := range plainColumns {
+		widths[i] = len(h)
+	}
+	for _, r := range rows {
+		for i, cell := range r {
+			if n := len([]rune(escapePipes(cell))); n > widths[i] {
+				widths[i] = n
+			}
 		}
+	}
+
+	fmt.Fprintln(w, markdownRow(plainColumns, widths))
+	seps := make([]string, len(widths))
+	for i, n := range widths {
+		seps[i] = strings.Repeat("-", n)
+	}
+	fmt.Fprintln(w, markdownRow(seps, widths))
+	for _, r := range rows {
+		fmt.Fprintln(w, markdownRow(r, widths))
 	}
 }
 
-func joinNonEmpty(parts []string, sep string) string {
-	out := parts[:0]
-	for _, p := range parts {
-		if p != "" {
-			out = append(out, p)
-		}
+// resetsIn is the bare remaining time, without the "resets in " prose the TUI
+// needs, because the column header already says what the value means.
+func resetsIn(g Gauge) string {
+	if g.Reset == nil {
+		return ""
 	}
-	s := ""
-	for i, p := range out {
-		if i > 0 {
-			s += sep
-		}
-		s += p
+	d := time.Until(*g.Reset)
+	if d <= 0 {
+		return "now"
 	}
-	return s
+	return formatDuration(d)
+}
+
+func markdownRow(cells []string, widths []int) string {
+	var b strings.Builder
+	b.WriteString("|")
+	for i, c := range cells {
+		c = escapePipes(c)
+		b.WriteString(" ")
+		b.WriteString(c)
+		b.WriteString(strings.Repeat(" ", widths[i]-len([]rune(c))))
+		b.WriteString(" |")
+	}
+	return b.String()
+}
+
+// escapePipes keeps a provider-supplied value from breaking the table.
+func escapePipes(s string) string {
+	return strings.ReplaceAll(s, "|", `\|`)
 }
 
 // jsonGauge/jsonPanel are the -json schema. Used is 0-100, or -1 when the
