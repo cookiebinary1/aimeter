@@ -13,6 +13,7 @@ import (
 
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/term"
 	"github.com/muesli/termenv"
 )
 
@@ -757,6 +758,12 @@ func main() {
 		return
 	}
 
+	// Auto-detect non-interactive contexts (pipes, CI, cron, deployment
+	// scripts): a TUI cannot run without a terminal, so default to plain.
+	if !*plain && !*jsonOut && !*once && !*show && !isInteractive() {
+		*plain = true
+	}
+
 	if *plain || *jsonOut {
 		panels := fetchAll(creds)
 		if *jsonOut {
@@ -786,4 +793,11 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+}
+
+// isInteractive reports whether stdin and stdout are both terminals — the TUI
+// needs both. Redirected output or a non-TTY stdin (pipes, files, /dev/null,
+// CI, cron) means plain output instead.
+func isInteractive() bool {
+	return term.IsTerminal(os.Stdin.Fd()) && term.IsTerminal(os.Stdout.Fd())
 }
