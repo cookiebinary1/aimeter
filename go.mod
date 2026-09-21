@@ -1,4 +1,4 @@
-module aimeter
+module github.com/cookiebinary1/aimeter
 
 go 1.25.0
 

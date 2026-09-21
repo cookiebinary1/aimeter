@@ -815,12 +815,21 @@ func timeElapsedPct(g Gauge) (float64, bool) {
 
 // ---------------------------------------------------------------------------
 
+// version is overridden at release time with -ldflags "-X main.version=v1.2.3".
+var version = "dev"
+
 func main() {
 	once := flag.Bool("once", false, "print the dashboard once and exit (no TUI)")
 	plain := flag.Bool("plain", false, "print one plain-text line per gauge (no TUI, no colors; for scripts)")
 	jsonOut := flag.Bool("json", false, "print all panels as machine-readable JSON (no TUI)")
 	show := flag.Bool("show-creds", false, "print where each provider's credentials resolve from and exit")
+	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("aimeter", version)
+		return
+	}
 
 	creds, src := resolveCreds()
 
