@@ -2,15 +2,11 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
-	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -18,7 +14,6 @@ import (
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
-	_ "modernc.org/sqlite"
 )
 
 // ---------------------------------------------------------------------------
@@ -50,129 +45,6 @@ type Creds struct {
 	OpenRouter string
 	EleKey     string
 	MeshyKey   string
-}
-
-// ---------------------------------------------------------------------------
-// Credentials
-
-func ompDBPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".omp", "agent", "agent.db")
-}
-
-func loadCreds() Creds {
-	var c Creds
-	// omp stores provider credentials in its agent db (SQLite, WAL).
-	if rows := ompCredentials(ompDBPath()); rows != nil {
-		if d, ok := rows["anthropic"].(map[string]any); ok {
-			c.AnthToken, _ = d["access"].(string)
-			c.AnthEmail, _ = d["email"].(string)
-		}
-		if d, ok := rows["zai"].(map[string]any); ok {
-			c.ZaiKey, _ = d["key"].(string)
-		}
-		if d, ok := rows["minimax-code"].(map[string]any); ok {
-			c.MmKey, _ = d["key"].(string)
-		}
-	}
-	// Fallback for Anthropic: Claude Code keychain entry.
-	if c.AnthToken == "" {
-		if out, err := exec.Command("security", "find-generic-password", "-s", "Claude Code-credentials", "-w").Output(); err == nil {
-			var kc struct {
-				ClaudeAiOauth struct {
-					AccessToken string `json:"accessToken"`
-				} `json:"claudeAiOauth"`
-			}
-			if json.Unmarshal([]byte(strings.TrimSpace(string(out))), &kc) == nil {
-				c.AnthToken = kc.ClaudeAiOauth.AccessToken
-			}
-		}
-	}
-	// Codex: its own auth.json.
-	home, _ := os.UserHomeDir()
-	if b, err := os.ReadFile(filepath.Join(home, ".codex", "auth.json")); err == nil {
-		var a struct {
-			Tokens struct {
-				AccessToken string `json:"access_token"`
-				AccountID   string `json:"account_id"`
-			} `json:"tokens"`
-		}
-		if json.Unmarshal(b, &a) == nil {
-			c.CodexToken = a.Tokens.AccessToken
-			c.CodexAcct = a.Tokens.AccountID
-		}
-	}
-	c.OpenRouter = findOpenRouterKey(home)
-	// Extra services (ElevenLabs, Meshy): ~/.config/aimeter/keys, KEY=VALUE per line.
-	if b, err := os.ReadFile(filepath.Join(home, ".config", "aimeter", "keys")); err == nil {
-		for _, line := range strings.Split(string(b), "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" || strings.HasPrefix(line, "#") {
-				continue
-			}
-			k, v, ok := strings.Cut(line, "=")
-			if !ok {
-				continue
-			}
-			switch strings.TrimSpace(k) {
-			case "ELEVENLABS_API_KEY":
-				if c.EleKey == "" {
-					c.EleKey = strings.TrimSpace(v)
-				}
-			case "MESHY_API_KEY":
-				if c.MeshyKey == "" {
-					c.MeshyKey = strings.TrimSpace(v)
-				}
-			}
-		}
-	}
-	return c
-}
-
-func sqlOpenRO(path string) (*sql.DB, error) {
-	return sql.Open("sqlite", "file:"+path+"?mode=ro")
-}
-
-func ompCredentials(path string) map[string]any {
-	db, err := sqlOpenRO(path)
-	if err != nil {
-		return nil
-	}
-	defer db.Close()
-	rws, err := db.Query("SELECT provider, data FROM auth_credentials")
-	if err != nil {
-		return nil
-	}
-	defer rws.Close()
-	out := map[string]any{}
-	for rws.Next() {
-		var provider, data string
-		if rws.Scan(&provider, &data) != nil {
-			continue
-		}
-		var v any
-		if json.Unmarshal([]byte(data), &v) == nil {
-			out[provider] = v
-		}
-	}
-	return out
-}
-
-func findOpenRouterKey(home string) string {
-	if k := os.Getenv("OPENROUTER_API_KEY"); k != "" {
-		return k
-	}
-	re := regexp.MustCompile(`OPENROUTER_API_KEY[^\w-]*["']?(sk-or-[A-Za-z0-9_-]+)`)
-	for _, f := range []string{".zshrc", ".zshenv", ".zprofile", filepath.Join(".codex", "config.toml")} {
-		b, err := os.ReadFile(filepath.Join(home, f))
-		if err != nil {
-			continue
-		}
-		if m := re.FindSubmatch(b); m != nil {
-			return string(m[1])
-		}
-	}
-	return ""
 }
 
 // ---------------------------------------------------------------------------
@@ -210,7 +82,7 @@ type anthBucket struct {
 
 func fetchAnthropic(ctx context.Context, c Creds) ([]Gauge, string, error) {
 	if c.AnthToken == "" {
-		return nil, "", fmt.Errorf("chýba credential — prihlás sa v omp/claude")
+		return nil, "", fmt.Errorf("chýba anthropic credential (credentials.json / keychain / -tags omp)")
 	}
 	var j struct {
 		FiveHour     *anthBucket `json:"five_hour"`
@@ -312,7 +184,7 @@ func (w *codexWin) Reset() *time.Time {
 
 func fetchZai(ctx context.Context, c Creds) ([]Gauge, string, error) {
 	if c.ZaiKey == "" {
-		return nil, "", fmt.Errorf("chýba ZAI API key (omp)")
+		return nil, "", fmt.Errorf("chýba ZAI_API_KEY (env / credentials.json)")
 	}
 	var j struct {
 		Code    int    `json:"code"`
@@ -391,7 +263,7 @@ func zaiWindow(unit, number int) time.Duration {
 
 func fetchMinimax(ctx context.Context, c Creds) ([]Gauge, string, error) {
 	if c.MmKey == "" {
-		return nil, "", fmt.Errorf("chýba MiniMax API key (omp)")
+		return nil, "", fmt.Errorf("chýba MINIMAX_API_KEY (env / credentials.json)")
 	}
 	var j struct {
 		ModelRemains []struct {
@@ -473,7 +345,7 @@ func fetchOpenRouter(ctx context.Context, c Creds) ([]Gauge, string, error) {
 
 func fetchElevenLabs(ctx context.Context, c Creds) ([]Gauge, string, error) {
 	if c.EleKey == "" {
-		return nil, "", fmt.Errorf("chýba ELEVENLABS_API_KEY (~/.config/aimeter/keys)")
+		return nil, "", fmt.Errorf("chýba ELEVENLABS_API_KEY (env / credentials.json)")
 	}
 	var j struct {
 		Tier           string `json:"tier"`
@@ -507,7 +379,7 @@ func fetchElevenLabs(ctx context.Context, c Creds) ([]Gauge, string, error) {
 
 func fetchMeshy(ctx context.Context, c Creds) ([]Gauge, string, error) {
 	if c.MeshyKey == "" {
-		return nil, "", fmt.Errorf("chýba MESHY_API_KEY (~/.config/aimeter/keys)")
+		return nil, "", fmt.Errorf("chýba MESHY_API_KEY (env / credentials.json)")
 	}
 	var j struct {
 		Balance float64 `json:"balance"`
@@ -862,10 +734,16 @@ func timeElapsedPct(g Gauge) (float64, bool) {
 // ---------------------------------------------------------------------------
 
 func main() {
-	once := flag.Bool("once", false, "vypíš dashboard raz a skonči (bez TUI)")
+	once := flag.Bool("once", false, "print the dashboard once and exit (no TUI)")
+	show := flag.Bool("show-creds", false, "print where each provider's credentials resolve from and exit")
 	flag.Parse()
 
-	creds := loadCreds()
+	creds, src := resolveCreds()
+
+	if *show {
+		printCredSources(src)
+		return
+	}
 
 	if *once {
 		lipgloss.SetColorProfile(termenv.TrueColor)

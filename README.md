@@ -41,16 +41,51 @@ go run .
 
 ## Configuration
 
-Credentials are read from the active OMP coding-agent profile's SQLite database
-(`ompDBPath()`), with a fallback search for an OpenRouter API key in `~/`. No
-config file of its own — the binary follows the same `~/.omp/agent/` layout as
-the hosting harness.
+No credentials live inside the app. Each provider resolves through a chain of
+non-invasive, read-only sources — first hit wins:
+
+| Priority | Source | Notes |
+| --- | --- | --- |
+| 1 | Environment | `ZAI_API_KEY`, `MINIMAX_API_KEY`, `OPENROUTER_API_KEY`, `ELEVENLABS_API_KEY`, `MESHY_API_KEY` |
+| 2 | `~/.config/aimeter/credentials.json` | JSON schema below; keep it `chmod 600` |
+| 3 | macOS Keychain | `security find-generic-password -s aimeter -a <provider>` |
+| 4 | OMP agent.db | only in `-tags omp` builds (personal-machine heuristics) |
+
+OAuth providers rotate their tokens, so they prefer live sources over frozen
+copies:
+
+- **Anthropic**: config → OMP db (`-tags omp`) → Claude Code keychain entry (macOS)
+- **Codex**: config → `~/.codex/auth.json` (Codex CLI's own file)
+
+`aimeter -show-creds` prints which source each provider resolved from — never
+the key values themselves.
+
+### credentials.json
+
+```json
+{
+  "zai":        { "api_key": "..." },
+  "minimax":    { "api_key": "..." },
+  "openrouter": { "api_key": "..." },
+  "elevenlabs": { "api_key": "..." },
+  "meshy":      { "api_key": "..." },
+  "anthropic":  { "access_token": "...", "email": "..." },
+  "codex":      { "access_token": "...", "account_id": "..." }
+}
+```
+
+Every field is optional — provide only the providers you use. Group/world
+readable permissions produce a warning at startup.
 
 ## Project structure
 
 ```
 .
-├── main.go       # single-binary Go program (provider fetchers + Bubble Tea UI)
+├── main.go                # provider fetchers + Bubble Tea UI
+├── credentials.go         # credential resolution chain (env → config → keychain)
+├── credentials_omp.go     # OMP agent.db fallbacks (build tag: omp)
+├── credentials_default.go # no-op stub for default builds
+├── credentials_test.go    # resolver chain tests
 ├── go.mod
 ├── go.sum
 └── LICENSE
