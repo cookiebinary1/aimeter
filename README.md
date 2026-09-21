@@ -59,6 +59,11 @@ Z.AI | GLM Coding Lite | 5h | 60% | 1207 / 2000 credits | resets in 3h 53m
 `detail`, `resets_at` (RFC 3339), `resets_in`, `window`. A failed provider
 carries an `error` field instead of gauges.
 
+If `aimeter` is run with no flags but **without an interactive terminal**
+(piped stdout/stdin, CI, cron, deployment scripts), it auto-detects this and
+behaves as `-plain` — the same data, log-friendly. Explicit flags always
+override: `-json`, `-once`, `-show-creds`.
+
 ## Configuration
 
 No credentials live inside the app. Each provider resolves through a chain of
