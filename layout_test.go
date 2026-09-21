@@ -163,3 +163,31 @@ func TestCaptionsNeverSqueezeBarBelowPreferred(t *testing.T) {
 		t.Errorf("bar is %d cells, want at least the preferred %d", lay.bar, preferredBar)
 	}
 }
+
+// A wide terminal must spend its surplus on the bars: captions take only the
+// cells they need, the rest grows every bar, so the frame never shows a wide
+// empty gutter beside stubby bars.
+func TestWideFrameGrowsBars(t *testing.T) {
+	panels := []Panel{widePanel(), tersePanel()}
+	prev := 0
+	for _, w := range []int{100, 140, 180} {
+		lay := computeLayout(panels, w)
+		if lay.bar <= prev {
+			t.Errorf("width %d: bar %d did not grow past %d", w, lay.bar, prev)
+		}
+		prev = lay.bar
+	}
+}
+
+// While the frame has room, a caption is shown whole — an off-by-one in the
+// caption column used to clip the last character of the longest caption.
+func TestLongestCaptionRendersWhole(t *testing.T) {
+	reset := time.Now().Add(44*time.Hour + 59*time.Minute)
+	p := Panel{Name: "Z.AI", Items: []Gauge{{
+		Label: "7d", Used: 48, Detail: "4806 / 10000 credits", Reset: &reset, Window: 7 * 24 * time.Hour,
+	}}}
+	out := renderOne(p, 120)
+	if want := captionText(p.Items[0]); !strings.Contains(out, want) {
+		t.Errorf("caption %q was clipped:\n%s", want, out)
+	}
+}

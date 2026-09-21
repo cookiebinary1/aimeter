@@ -615,8 +615,8 @@ func (m model) View() string {
 	// window triggers the auto-margin wrap, and the wrapped tail survives as
 	// a duplicate row when the window is resized.
 	w--
-	if w > 100 {
-		w = 100
+	if w > maxFrame {
+		w = maxFrame
 	}
 	if w < 20 {
 		w = 20
@@ -680,10 +680,10 @@ type frameLayout struct {
 
 const (
 	rowIndent    = 2
-	rowPct       = 5  // leading space plus up to "100%"
-	preferredBar = 26 // captions never squeeze the bar below this
+	rowPct       = 5   // leading space plus up to "100%"
+	preferredBar = 26  // captions never squeeze the bar below this
 	minBar       = 8
-	maxBar       = 40 // very wide terminals give the surplus to the captions
+	maxFrame     = 220 // beyond this the eye can no longer track a row
 )
 
 // computeLayout sizes the columns from the frame width and the widest caption
@@ -723,15 +723,14 @@ func computeLayout(panels []Panel, w int) frameLayout {
 		return l // no captions to show, or no room for them at all
 	}
 
-	l.extras = min(want, budget-preferredBar)
+	// +1 for the space between the percentage and the caption. Captions take
+	// exactly what they need; every remaining cell grows the bars, so a wide
+	// terminal shows wide bars instead of a wide empty gutter.
+	l.extras = min(want+1, budget-preferredBar)
 	if l.extras < 0 {
 		l.extras = 0
 	}
 	l.bar = budget - l.extras
-	if l.bar > maxBar {
-		l.extras += l.bar - maxBar
-		l.bar = maxBar
-	}
 	return l
 }
 
