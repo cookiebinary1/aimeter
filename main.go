@@ -514,16 +514,19 @@ func resetText(g Gauge) string {
 	if d <= 0 {
 		return "resets now"
 	}
-	var s string
+	return "resets in " + formatDuration(d)
+}
+
+// formatDuration renders a remaining time as e.g. "1h 58m" or "6d 9h".
+func formatDuration(d time.Duration) string {
 	switch {
 	case d >= 48*time.Hour:
-		s = fmt.Sprintf("%dd %dh", int(d.Hours())/24, int(d.Hours())%24)
+		return fmt.Sprintf("%dd %dh", int(d.Hours())/24, int(d.Hours())%24)
 	case d >= time.Hour:
-		s = fmt.Sprintf("%dh %02dm", int(d.Hours()), int(d.Minutes())%60)
+		return fmt.Sprintf("%dh %02dm", int(d.Hours()), int(d.Minutes())%60)
 	default:
-		s = fmt.Sprintf("%dm", int(d.Minutes()))
+		return fmt.Sprintf("%dm", int(d.Minutes()))
 	}
-	return "resets in " + s
 }
 
 // ---------------------------------------------------------------------------
@@ -742,6 +745,8 @@ func timeElapsedPct(g Gauge) (float64, bool) {
 
 func main() {
 	once := flag.Bool("once", false, "print the dashboard once and exit (no TUI)")
+	plain := flag.Bool("plain", false, "print one plain-text line per gauge (no TUI, no colors; for scripts)")
+	jsonOut := flag.Bool("json", false, "print all panels as machine-readable JSON (no TUI)")
 	show := flag.Bool("show-creds", false, "print where each provider's credentials resolve from and exit")
 	flag.Parse()
 
@@ -749,6 +754,19 @@ func main() {
 
 	if *show {
 		printCredSources(src, creds.Custom)
+		return
+	}
+
+	if *plain || *jsonOut {
+		panels := fetchAll(creds)
+		if *jsonOut {
+			if err := renderJSON(os.Stdout, panels); err != nil {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				os.Exit(1)
+			}
+		} else {
+			renderPlain(os.Stdout, panels)
+		}
 		return
 	}
 

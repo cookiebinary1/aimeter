@@ -39,6 +39,26 @@ Or directly:
 go run .
 ```
 
+### Usage
+
+```sh
+aimeter              # TUI dashboard (q quit, r refresh, auto-refresh 90s)
+aimeter -once        # render the dashboard once, no TUI
+aimeter -plain       # one " | "-separated line per gauge — for bash scripts
+aimeter -json        # machine-readable JSON — for scripts and AI agents
+aimeter -show-creds  # which source each credential resolved from
+```
+
+`-plain` example line:
+
+```text
+Z.AI | GLM Coding Lite | 5h | 60% | 1207 / 2000 credits | resets in 3h 53m
+```
+
+`-json` gauge fields: `label`, `used` (0-100, or -1 for balance-only),
+`detail`, `resets_at` (RFC 3339), `resets_in`, `window`. A failed provider
+carries an `error` field instead of gauges.
+
 ## Configuration
 
 No credentials live inside the app. Each provider resolves through a chain of
