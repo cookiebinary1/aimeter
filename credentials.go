@@ -58,13 +58,14 @@ func defaultCodexAuthPath() string {
 
 // credentialsFile is the on-disk schema of credentials.json.
 type credentialsFile struct {
-	Anthropic  oauthPair `json:"anthropic"`
-	Codex      oauthPair `json:"codex"`
-	Zai        apiKey    `json:"zai"`
-	Minimax    apiKey    `json:"minimax"`
-	OpenRouter apiKey    `json:"openrouter"`
-	ElevenLabs apiKey    `json:"elevenlabs"`
-	Meshy      apiKey    `json:"meshy"`
+	Anthropic  oauthPair        `json:"anthropic"`
+	Codex      oauthPair        `json:"codex"`
+	Zai        apiKey           `json:"zai"`
+	Minimax    apiKey           `json:"minimax"`
+	OpenRouter apiKey           `json:"openrouter"`
+	ElevenLabs apiKey           `json:"elevenlabs"`
+	Meshy      apiKey           `json:"meshy"`
+	Custom     []customProvider `json:"custom"`
 }
 
 type apiKey struct {
@@ -229,6 +230,20 @@ func resolveCreds() (Creds, map[string]string) {
 		}
 	}
 
+	// User-defined providers come from the config file only.
+	skipped := 0
+	for _, p := range cfg.Custom {
+		if p.Name == "" || p.URL == "" {
+			skipped++
+			continue
+		}
+		c.Custom = append(c.Custom, p)
+		src["custom:"+p.Name] = "config"
+	}
+	if skipped > 0 {
+		fmt.Fprintf(os.Stderr, "aimeter: warning: %d custom provider(s) skipped (need name and url)\n", skipped)
+	}
+
 	for _, p := range credProviders {
 		if src[p] == "" {
 			src[p] = "missing"
@@ -241,14 +256,18 @@ func resolveCreds() (Creds, map[string]string) {
 var credProviders = []string{"anthropic", "codex", "zai", "minimax", "openrouter", "elevenlabs", "meshy"}
 
 // printCredSources reports where each provider resolved from — never the keys.
-func printCredSources(src map[string]string) {
+func printCredSources(src map[string]string, custom []customProvider) {
 	w := 0
-	for _, p := range credProviders {
+	rows := append([]string{}, credProviders...)
+	for _, p := range custom {
+		rows = append(rows, "custom:"+p.Name)
+	}
+	for _, p := range rows {
 		if len(p) > w {
 			w = len(p)
 		}
 	}
-	for _, p := range credProviders {
+	for _, p := range rows {
 		fmt.Printf("%-*s  %s\n", w, p, src[p])
 	}
 }

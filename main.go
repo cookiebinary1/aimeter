@@ -20,11 +20,11 @@ import (
 // Data model
 
 type Gauge struct {
-	Label  string  // e.g. "5h", "7 dní"
+	Label  string  // e.g. "5h", "7d"
 	Used   float64 // 0..100
 	Reset  *time.Time
 	Detail string
-	Window time.Duration // dĺžka okna; >0 a Reset → kreslí sa aj časový bar
+	Window time.Duration // window length; >0 with Reset also draws the time bar
 }
 
 type Panel struct {
@@ -45,6 +45,7 @@ type Creds struct {
 	OpenRouter string
 	EleKey     string
 	MeshyKey   string
+	Custom     []customProvider
 }
 
 // ---------------------------------------------------------------------------
@@ -82,7 +83,7 @@ type anthBucket struct {
 
 func fetchAnthropic(ctx context.Context, c Creds) ([]Gauge, string, error) {
 	if c.AnthToken == "" {
-		return nil, "", fmt.Errorf("chýba anthropic credential (credentials.json / keychain / -tags omp)")
+		return nil, "", fmt.Errorf("missing anthropic credential (credentials.json / keychain / -tags omp)")
 	}
 	var j struct {
 		FiveHour     *anthBucket `json:"five_hour"`
@@ -104,10 +105,10 @@ func fetchAnthropic(ctx context.Context, c Creds) ([]Gauge, string, error) {
 		}
 	}
 	add("5h", j.FiveHour, 5*time.Hour)
-	add("7 dní", j.SevenDay, 7*24*time.Hour)
+	add("7d", j.SevenDay, 7*24*time.Hour)
 	add("opus 7d", j.SevenDayOpus, 7*24*time.Hour)
 	if len(gs) == 0 {
-		return nil, "", fmt.Errorf("prázdna odpoveď")
+		return nil, "", fmt.Errorf("empty response")
 	}
 	note := ""
 	if c.AnthEmail != "" {
@@ -118,7 +119,7 @@ func fetchAnthropic(ctx context.Context, c Creds) ([]Gauge, string, error) {
 
 func fetchCodex(ctx context.Context, c Creds) ([]Gauge, string, error) {
 	if c.CodexToken == "" {
-		return nil, "", fmt.Errorf("chýba ~/.codex/auth.json")
+		return nil, "", fmt.Errorf("missing ~/.codex/auth.json")
 	}
 	var j struct {
 		Email    string `json:"email"`
@@ -147,7 +148,7 @@ func fetchCodex(ctx context.Context, c Creds) ([]Gauge, string, error) {
 			Window: time.Duration(w.WindowSeconds) * time.Second})
 	}
 	if len(gs) == 0 {
-		return nil, "", fmt.Errorf("žiadne okná v odpovedi")
+		return nil, "", fmt.Errorf("no windows in response")
 	}
 	return gs, j.PlanType, nil
 }
@@ -164,7 +165,7 @@ func (w *codexWin) Label() string {
 	case 18000:
 		return "5h"
 	case 604800:
-		return "7 dní"
+		return "7d"
 	default:
 		return fmt.Sprintf("%dh", w.WindowSeconds/3600)
 	}
@@ -184,7 +185,7 @@ func (w *codexWin) Reset() *time.Time {
 
 func fetchZai(ctx context.Context, c Creds) ([]Gauge, string, error) {
 	if c.ZaiKey == "" {
-		return nil, "", fmt.Errorf("chýba ZAI_API_KEY (env / credentials.json)")
+		return nil, "", fmt.Errorf("missing ZAI_API_KEY (env / credentials.json)")
 	}
 	var j struct {
 		Code    int    `json:"code"`
@@ -226,11 +227,11 @@ func fetchZai(ctx context.Context, c Creds) ([]Gauge, string, error) {
 			Used:   l.Percentage,
 			Reset:  reset,
 			Window: zaiWindow(l.Unit, l.Number),
-			Detail: fmt.Sprintf("%.0f / %.0f kreditov", l.CurrentValue, l.Usage),
+			Detail: fmt.Sprintf("%.0f / %.0f credits", l.CurrentValue, l.Usage),
 		})
 	}
 	if len(gs) == 0 {
-		return nil, "", fmt.Errorf("žiadne limity")
+		return nil, "", fmt.Errorf("no limits")
 	}
 	note := ""
 	if j.Data.Level != "" {
@@ -244,7 +245,7 @@ func zaiLabel(unit, number int) string {
 	case unit == 3 && number == 5:
 		return "5h"
 	case unit == 6:
-		return "7 dní"
+		return "7d"
 	default:
 		return fmt.Sprintf("%d×%d", number, unit)
 	}
@@ -263,7 +264,7 @@ func zaiWindow(unit, number int) time.Duration {
 
 func fetchMinimax(ctx context.Context, c Creds) ([]Gauge, string, error) {
 	if c.MmKey == "" {
-		return nil, "", fmt.Errorf("chýba MINIMAX_API_KEY (env / credentials.json)")
+		return nil, "", fmt.Errorf("missing MINIMAX_API_KEY (env / credentials.json)")
 	}
 	var j struct {
 		ModelRemains []struct {
@@ -307,18 +308,18 @@ func fetchMinimax(ctx context.Context, c Creds) ([]Gauge, string, error) {
 			if m.WeeklyStart > 0 {
 				win = time.Duration(m.WeeklyEnd-m.WeeklyStart) * time.Millisecond
 			}
-			gs = append(gs, Gauge{Label: "7 dní", Used: 100 - m.WeeklyLeft, Reset: &t, Window: win})
+			gs = append(gs, Gauge{Label: "7d", Used: 100 - m.WeeklyLeft, Reset: &t, Window: win})
 		}
 	}
 	if len(gs) == 0 {
-		return nil, "", fmt.Errorf("žiadny 'general' plán")
+		return nil, "", fmt.Errorf("no 'general' plan")
 	}
 	return gs, "Coding Plan", nil
 }
 
 func fetchOpenRouter(ctx context.Context, c Creds) ([]Gauge, string, error) {
 	if c.OpenRouter == "" {
-		return nil, "", fmt.Errorf("chýba OPENROUTER_API_KEY")
+		return nil, "", fmt.Errorf("missing OPENROUTER_API_KEY")
 	}
 	var j struct {
 		Data struct {
@@ -333,19 +334,19 @@ func fetchOpenRouter(ctx context.Context, c Creds) ([]Gauge, string, error) {
 	}
 	d := j.Data
 	if d.TotalCredits <= 0 {
-		return nil, "", fmt.Errorf("žiadne credits")
+		return nil, "", fmt.Errorf("no credits")
 	}
 	used := d.TotalUsage / d.TotalCredits * 100
 	return []Gauge{{
-		Label:  "kredit",
+		Label:  "credits",
 		Used:   used,
-		Detail: fmt.Sprintf("$%.2f / $%.2f · zostáva $%.2f", d.TotalUsage, d.TotalCredits, d.TotalCredits-d.TotalUsage),
+		Detail: fmt.Sprintf("$%.2f / $%.2f · $%.2f left", d.TotalUsage, d.TotalCredits, d.TotalCredits-d.TotalUsage),
 	}}, "pay-as-you-go", nil
 }
 
 func fetchElevenLabs(ctx context.Context, c Creds) ([]Gauge, string, error) {
 	if c.EleKey == "" {
-		return nil, "", fmt.Errorf("chýba ELEVENLABS_API_KEY (env / credentials.json)")
+		return nil, "", fmt.Errorf("missing ELEVENLABS_API_KEY (env / credentials.json)")
 	}
 	var j struct {
 		Tier           string `json:"tier"`
@@ -369,17 +370,17 @@ func fetchElevenLabs(ctx context.Context, c Creds) ([]Gauge, string, error) {
 		pct = float64(j.CharacterCount) / float64(j.CharacterLimit) * 100
 	}
 	return []Gauge{{
-		Label:  "znaky",
+		Label:  "chars",
 		Used:   pct,
 		Reset:  rp,
-		Window: 30 * 24 * time.Hour, // mesačný cyklus (approx)
-		Detail: fmt.Sprintf("%d / %d znakov", j.CharacterCount, j.CharacterLimit),
+		Window: 30 * 24 * time.Hour, // monthly cycle (approx)
+		Detail: fmt.Sprintf("%d / %d chars", j.CharacterCount, j.CharacterLimit),
 	}}, strings.ToUpper(j.Tier[:1]) + j.Tier[1:], nil
 }
 
 func fetchMeshy(ctx context.Context, c Creds) ([]Gauge, string, error) {
 	if c.MeshyKey == "" {
-		return nil, "", fmt.Errorf("chýba MESHY_API_KEY (env / credentials.json)")
+		return nil, "", fmt.Errorf("missing MESHY_API_KEY (env / credentials.json)")
 	}
 	var j struct {
 		Balance float64 `json:"balance"`
@@ -390,10 +391,10 @@ func fetchMeshy(ctx context.Context, c Creds) ([]Gauge, string, error) {
 		return nil, "", err
 	}
 	return []Gauge{{
-		Label:  "kredity",
+		Label:  "credits",
 		Used:   -1,
-		Detail: fmt.Sprintf("%.0f kreditov zostáva", j.Balance),
-	}}, "3D generovanie", nil
+		Detail: fmt.Sprintf("%.0f credits left", j.Balance),
+	}}, "3D generation", nil
 }
 
 // ---------------------------------------------------------------------------
@@ -412,6 +413,12 @@ func fetchAll(c Creds) []Panel {
 		{"OpenRouter", fetchOpenRouter},
 		{"ElevenLabs", fetchElevenLabs},
 		{"Meshy", fetchMeshy},
+	}
+	for _, cp := range c.Custom {
+		p := cp
+		defs = append(defs, def{p.Name, func(ctx context.Context, _ Creds) ([]Gauge, string, error) {
+			return fetchCustom(ctx, p)
+		}})
 	}
 	panels := make([]Panel, len(defs))
 	var wg sync.WaitGroup
@@ -505,7 +512,7 @@ func resetText(g Gauge) string {
 	}
 	d := time.Until(*g.Reset)
 	if d <= 0 {
-		return "reset teraz"
+		return "resets now"
 	}
 	var s string
 	switch {
@@ -516,7 +523,7 @@ func resetText(g Gauge) string {
 	default:
 		s = fmt.Sprintf("%dm", int(d.Minutes()))
 	}
-	return "reset za " + s
+	return "resets in " + s
 }
 
 // ---------------------------------------------------------------------------
@@ -600,7 +607,7 @@ func (m model) View() string {
 	}
 	var b strings.Builder
 
-	left := headerStyle.Render("⚡ aimeter") + dimStyle.Render(" · stav AI služieb")
+	left := headerStyle.Render("⚡ aimeter") + dimStyle.Render(" · AI service status")
 	right := dimStyle.Render(fmtClock(m.now))
 	b.WriteString(placeBetween(left, right, w))
 	b.WriteString("\n\n")
@@ -611,17 +618,17 @@ func (m model) View() string {
 	}
 
 	if m.loading && m.last.IsZero() {
-		b.WriteString(dimStyle.Render("  načítavam…") + "\n")
+		b.WriteString(dimStyle.Render("  loading…") + "\n")
 	}
 
-	footer := dimStyle.Render("r obnoviť · q koniec")
+	footer := dimStyle.Render("r refresh · q quit")
 	var fr string
 	if !m.last.IsZero() {
 		left_ := int(m.interval.Seconds()) - int(time.Since(m.last).Seconds())
 		if left_ < 0 {
 			left_ = 0
 		}
-		fr = dimStyle.Render(fmt.Sprintf("auto-obnova za %ds · aktualizované %s", left_, fmtClock(m.last)))
+		fr = dimStyle.Render(fmt.Sprintf("auto-refresh in %ds · updated %s", left_, fmtClock(m.last)))
 	}
 	b.WriteString(placeBetween(footer, fr, w))
 	return b.String()
@@ -683,7 +690,7 @@ func renderPanel(p Panel, w int) string {
 					strings.Repeat(" ", 8)+
 					thinBar(tp, 26)+" "+
 					timePctStyle.Render(fmt.Sprintf("%3.0f%%", tp))+
-					dimStyle.Render(" času")))
+					dimStyle.Render(" elapsed")))
 			}
 		}
 		body = strings.Join(rows, "\n")
@@ -708,8 +715,8 @@ func clampPct(p float64) float64 {
 	return p
 }
 
-// thinBar je polovičný (nízky) bar pre priebeh času v okne — horná polovica
-// riadku, takže opticky nadväzuje na usage bar nad ním.
+// thinBar is a half-height bar for window progress — the upper half of the
+// row, so it optically continues the usage bar above it.
 func thinBar(p float64, width int) string {
 	filled := int(mathRound(p / 100 * float64(width)))
 	if filled < 0 {
@@ -741,7 +748,7 @@ func main() {
 	creds, src := resolveCreds()
 
 	if *show {
-		printCredSources(src)
+		printCredSources(src, creds.Custom)
 		return
 	}
 
@@ -758,7 +765,7 @@ func main() {
 	}
 
 	if _, err := tea.NewProgram(initialModel(creds), tea.WithAltScreen()).Run(); err != nil {
-		fmt.Fprintln(os.Stderr, "chyba:", err)
+		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 }

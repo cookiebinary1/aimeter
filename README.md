@@ -71,12 +71,41 @@ the key values themselves.
   "elevenlabs": { "api_key": "..." },
   "meshy":      { "api_key": "..." },
   "anthropic":  { "access_token": "...", "email": "..." },
-  "codex":      { "access_token": "...", "account_id": "..." }
+  "codex":      { "access_token": "...", "account_id": "..." },
+  "custom": [
+    {
+      "name": "MyAI",
+      "url": "https://api.myai.example/usage",
+      "api_key": "sk-...",
+      "label": "monthly",
+      "used": "/data/used",
+      "total": "/data/quota",
+      "detail": "/data/plan"
+    }
+  ]
 }
 ```
 
 Every field is optional — provide only the providers you use. Group/world
 readable permissions produce a warning at startup.
+
+### Custom providers
+
+For services aimeter does not know, add a `custom` entry: aimeter sends one
+`GET` with an `Authorization: Bearer <api_key>` header and extracts values by
+[RFC 6901 JSON pointer](https://datatracker.ietf.org/doc/html/rfc6901):
+
+- `percent` — pointer to a 0-100 number, **or**
+- `used` + `total` — pointers whose ratio becomes the percentage
+- `label` (gauge caption, default `usage`), `detail` (extra text line) — optional
+
+```json
+{ "name": "MyAI", "url": "https://api.myai.example/usage", "api_key": "sk-...",
+  "percent": "/data/usage_percent", "detail": "/data/plan_name" }
+```
+
+The gauge renders even without a reset window; entries missing `name` or `url`
+are skipped with a warning.
 
 ## Project structure
 
@@ -85,6 +114,8 @@ readable permissions produce a warning at startup.
 ├── main.go                # provider fetchers + Bubble Tea UI
 ├── credentials.go         # credential resolution chain (env → config → keychain)
 ├── credentials_omp.go     # OMP agent.db fallbacks (build tag: omp)
+├── custom.go               # user-defined providers (JSON pointer extraction)
+├── custom_test.go          # pointer parsing + fetch tests
 ├── credentials_default.go # no-op stub for default builds
 ├── credentials_test.go    # resolver chain tests
 ├── go.mod
