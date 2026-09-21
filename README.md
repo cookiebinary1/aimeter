@@ -8,6 +8,8 @@ TUI dashboard that surfaces API usage and quota gauges for a stack of AI
 providers in one terminal view. Single static binary, no cgo, no runtime
 dependencies.
 
+![aimeter dashboard](docs/screenshot.png)
+
 ## What it shows
 
 Per-provider panels with current utilization, quota windows, and time-until-reset
