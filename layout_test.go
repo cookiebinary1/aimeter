@@ -182,12 +182,14 @@ func TestWideFrameGrowsBars(t *testing.T) {
 // While the frame has room, a caption is shown whole — an off-by-one in the
 // caption column used to clip the last character of the longest caption.
 func TestLongestCaptionRendersWhole(t *testing.T) {
-	reset := time.Now().Add(44*time.Hour + 59*time.Minute)
-	p := Panel{Name: "Z.AI", Items: []Gauge{{
-		Label: "7d", Used: 48, Detail: "4806 / 10000 credits", Reset: &reset, Window: 7 * 24 * time.Hour,
-	}}}
+	// No Reset: the caption is then a fixed string. A relative "resets in"
+	// caption is recomputed when the expectation is built, so it flips a
+	// minute on a slow runner and the test fails for the wrong reason.
+	caption := "4806 / 10000 credits  resets in 44h 58m"
+	p := Panel{Name: "Z.AI", Items: []Gauge{{Label: "7d", Used: 48, Detail: caption}}}
+
 	out := renderOne(p, 120)
-	if want := captionText(p.Items[0]); !strings.Contains(out, want) {
-		t.Errorf("caption %q was clipped:\n%s", want, out)
+	if !strings.Contains(out, caption) {
+		t.Errorf("caption %q was clipped:\n%s", caption, out)
 	}
 }
