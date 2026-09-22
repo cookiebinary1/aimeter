@@ -19,10 +19,24 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	ompDBPath = filepath.Join(dir, "absent.db")
-	os.Setenv("HOME", dir)
+	for _, k := range homeVars {
+		os.Setenv(k, dir)
+	}
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)
+}
+
+// os.UserHomeDir reads HOME on unix and USERPROFILE on Windows, so a test that
+// redirects only one of them silently keeps reading the real home directory.
+var homeVars = []string{"HOME", "USERPROFILE"}
+
+// setHome points os.UserHomeDir at dir for the duration of one test.
+func setHome(t *testing.T, dir string) {
+	t.Helper()
+	for _, k := range homeVars {
+		t.Setenv(k, dir)
+	}
 }
 
 // newAgentDB builds a throwaway agent.db with the columns ompCredentials reads.
@@ -106,7 +120,7 @@ func TestOMPCredentialsMissingDB(t *testing.T) {
 
 func TestRCScanOpenRouter(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHome(t, home)
 	if err := os.WriteFile(filepath.Join(home, ".zshrc"),
 		[]byte("# comment\nexport OPENROUTER_API_KEY=\"sk-or-v1-abc123_XY\"\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -121,7 +135,7 @@ func TestRCScanOpenRouter(t *testing.T) {
 // export never gets sent to openrouter.ai as a bearer token.
 func TestRCScanOpenRouterIgnoresForeignKeys(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHome(t, home)
 	if err := os.WriteFile(filepath.Join(home, ".zshrc"),
 		[]byte("export OPENROUTER_API_KEY=$OTHER_KEY\nexport ANTHROPIC_API_KEY=sk-ant-123\n"), 0o600); err != nil {
 		t.Fatal(err)
