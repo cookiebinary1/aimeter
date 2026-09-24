@@ -64,4 +64,6 @@ release:
     brew install cookiebinary1/tap/aimeter
     # or
     go install github.com/cookiebinary1/aimeter@latest
+    # or, on macOS / Linux without Homebrew or Go:
+    curl -fsSL https://raw.githubusercontent.com/cookiebinary1/aimeter/main/install.sh | sh
     ```

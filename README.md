@@ -41,6 +41,47 @@ brew install cookiebinary1/tap/aimeter
 go install github.com/cookiebinary1/aimeter@latest
 ```
 
+### Shell installer (macOS / Linux)
+
+Install the latest release without Homebrew or a Go toolchain:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/cookiebinary1/aimeter/main/install.sh | sh
+```
+
+The installer detects amd64/arm64, downloads the matching GitHub Release,
+verifies its SHA-256 against `checksums.txt`, and installs to `~/.local/bin`.
+It requires `curl`, `tar`, and either `sha256sum` or `shasum`. It does not use
+sudo or modify your shell configuration. Add `~/.local/bin` to your PATH if
+needed, then run `aimeter`. Rerun the installer to update.
+
+To inspect the script first, pin a release, or choose another directory:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/cookiebinary1/aimeter/main/install.sh -o install.sh
+less install.sh
+AIMETER_VERSION=v0.1.1 AIMETER_INSTALL_DIR="$HOME/.local/bin" sh install.sh
+```
+
+If the download or verification fails, your existing binary is left in place.
+See [install.sh](install.sh) for the implementation.
+
+### Windows
+
+With Go 1.25 or later installed, run in PowerShell or Command Prompt:
+
+```sh
+go install github.com/cookiebinary1/aimeter@latest
+```
+
+Make sure the Go binary directory (normally `%USERPROFILE%\go\bin`) is on
+PATH. Without Go, download the Windows amd64 or arm64 ZIP from
+[GitHub Releases](https://github.com/cookiebinary1/aimeter/releases), extract
+it, and run `.\aimeter.exe` from that folder in PowerShell. The shell installer
+above is for macOS/Linux, not native Windows.
+
+### Build from source
+
 Or build from a checkout:
 
 ```sh
@@ -228,6 +269,8 @@ group- or world-readable.
 ├── credentials_default.go  # no-op stub for default builds
 ├── custom.go               # user-defined providers (JSON pointer extraction)
 ├── output.go               # -plain and -json renderers
+├── install.sh              # checksum-verified macOS/Linux release installer
+├── tests/test_install.py   # offline installer regression tests
 ├── *_test.go               # resolver, custom, output and layout tests
 ├── go.mod
 ├── go.sum

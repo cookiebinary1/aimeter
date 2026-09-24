@@ -24,7 +24,10 @@ go test ./...
 go build -tags omp .      # the optional OMP build must keep compiling
 ```
 
-CI runs exactly these on Linux, macOS and Windows.
+CI runs the Go checks on Linux, macOS and Windows. On Linux/macOS it also
+checks the shell installer with `sh -n install.sh` and
+`python3 tests/test_install.py`. Installer tests use local fixtures and make
+no network requests.
 
 ## Conventions
 
