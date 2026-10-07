@@ -39,6 +39,7 @@ changelog:
 
 brews:
   - name: aimeter
+    skip_upload: "{{ if .Env.HOMEBREW_TAP_TOKEN }}false{{ else }}true{{ end }}"
     repository:
       owner: cookiebinary1
       name: homebrew-tap

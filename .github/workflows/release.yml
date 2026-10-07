@@ -28,5 +28,13 @@ jobs:
           # Pushing the formula to cookiebinary1/homebrew-tap needs a token that
           # can write to that repository; the default GITHUB_TOKEN cannot.
           # Create a PAT with `repo` scope and add it as the HOMEBREW_TAP_TOKEN
-          # secret, otherwise the brews step is skipped.
+          # secret, otherwise formula upload is skipped (update the tap manually).
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Report manual Homebrew update requirement
+        run: |
+          if [ -z "$HOMEBREW_TAP_TOKEN" ]; then
+            echo "::notice::Without HOMEBREW_TAP_TOKEN, update cookiebinary1/homebrew-tap manually after this release."
+          fi
+        env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
