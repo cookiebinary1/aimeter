@@ -29,11 +29,11 @@ func renderPlain(w io.Writer, panels []Panel) {
 	rows := [][]string{}
 	for _, p := range panels {
 		if p.Err != nil {
-			rows = append(rows, []string{p.Name, p.Note, "", "", "ERROR: " + p.Err.Error(), ""})
+			rows = append(rows, []string{p.Name, panelPlan(p), "", "", "ERROR: " + p.Err.Error(), ""})
 			continue
 		}
 		if len(p.Items) == 0 {
-			rows = append(rows, []string{p.Name, p.Note, "", "", "(no data)", ""})
+			rows = append(rows, []string{p.Name, panelPlan(p), "", "", "(no data)", ""})
 			continue
 		}
 		for _, g := range p.Items {
@@ -41,7 +41,7 @@ func renderPlain(w io.Writer, panels []Panel) {
 			if g.Used >= 0 {
 				used = fmt.Sprintf("%.0f%%", clampPct(g.Used))
 			}
-			rows = append(rows, []string{p.Name, p.Note, g.Label, used, g.Detail, resetsIn(g)})
+			rows = append(rows, []string{p.Name, panelPlan(p), g.Label, used, g.Detail, resetsIn(g)})
 		}
 	}
 
@@ -113,6 +113,7 @@ type jsonGauge struct {
 type jsonPanel struct {
 	Provider string      `json:"provider"`
 	Note     string      `json:"note,omitempty"`
+	Cost     string      `json:"cost,omitempty"`
 	Error    string      `json:"error,omitempty"`
 	Gauges   []jsonGauge `json:"gauges"`
 }
@@ -121,7 +122,7 @@ type jsonPanel struct {
 func renderJSON(w io.Writer, panels []Panel) error {
 	out := make([]jsonPanel, 0, len(panels))
 	for _, p := range panels {
-		jp := jsonPanel{Provider: p.Name, Note: p.Note, Gauges: []jsonGauge{}}
+		jp := jsonPanel{Provider: p.Name, Note: p.Note, Cost: p.Cost, Gauges: []jsonGauge{}}
 		if p.Err != nil {
 			jp.Error = p.Err.Error()
 		}
@@ -146,4 +147,14 @@ func renderJSON(w io.Writer, panels []Panel) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(out)
+}
+
+func panelPlan(p Panel) string {
+	if p.Cost == "" {
+		return p.Note
+	}
+	if p.Note == "" {
+		return p.Cost
+	}
+	return p.Note + " · " + p.Cost
 }

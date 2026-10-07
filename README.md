@@ -202,6 +202,11 @@ copies:
   (macOS keychain entry, or `~/.claude/.credentials.json`)
 - **Codex**: config → `~/.codex/auth.json` (Codex CLI's own file)
 
+Anthropic usage responses are cached for five minutes. If Anthropic returns
+HTTP 429, aimeter respects `Retry-After` across restarts and shows recent cached
+usage for up to two hours, marked with its age. Without recent data, it shows
+the time until the next attempt. The cache lives in the OS user cache directory.
+
 `aimeter -show-creds` prints which source each provider resolved from — never
 the key values themselves.
 
@@ -233,6 +238,36 @@ the key values themselves.
 Every field is optional — provide only the providers you use. Group/world
 readable permissions produce a warning at startup.
 
+### Service costs
+
+Panel headers show costs when there is enough room. Recognized Codex Plus
+uses `~$20/mo list` (USD list price, verified 2026-10-07, not your invoice).
+OpenRouter shows `usage-based`. Other plans show `cost unknown` because usage
+APIs do not reliably identify their subscription price.
+
+Set your actual payments in a top-level `costs` object in `credentials.json`:
+
+```json
+{
+  "costs": {
+    "anthropic": "€100/mo",
+    "codex": "€23/mo",
+    "zai": "$3/mo annual",
+    "minimax": "$10/mo",
+    "elevenlabs": "$5/mo",
+    "meshy": "free"
+  }
+}
+```
+
+These are examples, not inferred payments. Supported keys are the provider
+IDs above, `openrouter`, and `custom:<name>`. An empty string hides a cost.
+Overrides take priority over list prices. JSON includes an additive `cost`
+field; plain output includes the cost in the existing Plan column.
+Credentials and costs are reread on every TUI refresh so OAuth token rotation
+by Claude Code or Codex does not require restarting aimeter. Explicit token
+copies in credentials.json still take priority and must be kept current.
+
 ### Custom providers
 
 For services aimeter does not know, add a `custom` entry: aimeter sends one
@@ -254,8 +289,9 @@ are skipped with a warning.
 ## Security
 
 aimeter only ever **reads** credentials, and only sends each key to that
-provider's own API over HTTPS. It never writes, refreshes or forwards a key,
-has no telemetry, and `-show-creds` deliberately prints sources without
+provider's own API over HTTPS. It never writes, refreshes or forwards a key.
+It writes Anthropic usage and retry times to a local cache, but never the token.
+It has no telemetry, and `-show-creds` deliberately prints sources without
 values. `credentials.json` should be `chmod 600`; aimeter warns when it is
 group- or world-readable.
 

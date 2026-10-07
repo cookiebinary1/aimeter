@@ -58,14 +58,15 @@ func defaultCodexAuthPath() string {
 
 // credentialsFile is the on-disk schema of credentials.json.
 type credentialsFile struct {
-	Anthropic  oauthPair        `json:"anthropic"`
-	Codex      oauthPair        `json:"codex"`
-	Zai        apiKey           `json:"zai"`
-	Minimax    apiKey           `json:"minimax"`
-	OpenRouter apiKey           `json:"openrouter"`
-	ElevenLabs apiKey           `json:"elevenlabs"`
-	Meshy      apiKey           `json:"meshy"`
-	Custom     []customProvider `json:"custom"`
+	Anthropic  oauthPair         `json:"anthropic"`
+	Codex      oauthPair         `json:"codex"`
+	Zai        apiKey            `json:"zai"`
+	Minimax    apiKey            `json:"minimax"`
+	OpenRouter apiKey            `json:"openrouter"`
+	ElevenLabs apiKey            `json:"elevenlabs"`
+	Meshy      apiKey            `json:"meshy"`
+	Custom     []customProvider  `json:"custom"`
+	Costs      map[string]string `json:"costs"`
 }
 
 type apiKey struct {
@@ -187,6 +188,7 @@ func resolveCreds() (Creds, map[string]string) {
 	var c Creds
 	src := map[string]string{}
 	cfg, _ := readConfigFile() // optional; empty on any error
+	c.Costs = cfg.Costs
 
 	resolveKey := func(name, envName, cfgVal string) string {
 		switch {

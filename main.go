@@ -32,6 +32,7 @@ type Gauge struct {
 type Panel struct {
 	Name    string
 	Note    string
+	Cost    string
 	Items   []Gauge
 	Err     error
 	Updated time.Time
@@ -48,12 +49,20 @@ type Creds struct {
 	EleKey     string
 	MeshyKey   string
 	Custom     []customProvider
+	Costs      map[string]string
 }
 
 // ---------------------------------------------------------------------------
 // HTTP + JSON
 
 var httpc = &http.Client{Timeout: 15 * time.Second}
+
+type httpStatusError struct {
+	code       int
+	retryAfter string
+}
+
+func (e *httpStatusError) Error() string { return fmt.Sprintf("HTTP %d", e.code) }
 
 func getJSON(ctx context.Context, url string, hdr map[string]string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -70,7 +79,7 @@ func getJSON(ctx context.Context, url string, hdr map[string]string, out any) er
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP %d", resp.StatusCode)
+		return &httpStatusError{code: resp.StatusCode, retryAfter: resp.Header.Get("Retry-After")}
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }
@@ -87,6 +96,13 @@ func fetchAnthropic(ctx context.Context, c Creds) ([]Gauge, string, error) {
 	if c.AnthToken == "" {
 		return nil, "", fmt.Errorf("missing anthropic credential (credentials.json / keychain / -tags omp)")
 	}
+	cache := readAnthropicCache(c.AnthToken)
+	if time.Now().Before(cache.RetryAt) {
+		return cachedAnthropic(cache)
+	}
+	if len(cache.Items) > 0 && time.Since(cache.FetchedAt) < 5*time.Minute {
+		return cache.Items, c.AnthEmail, nil
+	}
 	var j struct {
 		FiveHour     *anthBucket `json:"five_hour"`
 		SevenDay     *anthBucket `json:"seven_day"`
@@ -98,6 +114,11 @@ func fetchAnthropic(ctx context.Context, c Creds) ([]Gauge, string, error) {
 		"User-Agent":     "claude-code/2.0",
 	}, &j)
 	if err != nil {
+		if status, ok := err.(*httpStatusError); ok && status.code == http.StatusTooManyRequests {
+			cache.RetryAt = anthropicRetryAt(status.retryAfter)
+			writeAnthropicCache(c.AnthToken, cache)
+			return cachedAnthropic(cache)
+		}
 		return nil, "", err
 	}
 	var gs []Gauge
@@ -116,6 +137,7 @@ func fetchAnthropic(ctx context.Context, c Creds) ([]Gauge, string, error) {
 	if c.AnthEmail != "" {
 		note = c.AnthEmail
 	}
+	writeAnthropicCache(c.AnthToken, anthropicCache{FetchedAt: time.Now(), Items: gs})
 	return gs, note, nil
 }
 
@@ -429,20 +451,21 @@ func fetchMeshy(ctx context.Context, c Creds) ([]Gauge, string, error) {
 func fetchAll(c Creds) []Panel {
 	type def struct {
 		name string
+		key  string
 		fn   func(context.Context, Creds) ([]Gauge, string, error)
 	}
 	defs := []def{
-		{"Anthropic", fetchAnthropic},
-		{"OpenAI Codex", fetchCodex},
-		{"Z.AI", fetchZai},
-		{"MiniMax Code", fetchMinimax},
-		{"OpenRouter", fetchOpenRouter},
-		{"ElevenLabs", fetchElevenLabs},
-		{"Meshy", fetchMeshy},
+		{"Anthropic", "anthropic", fetchAnthropic},
+		{"OpenAI Codex", "codex", fetchCodex},
+		{"Z.AI", "zai", fetchZai},
+		{"MiniMax Code", "minimax", fetchMinimax},
+		{"OpenRouter", "openrouter", fetchOpenRouter},
+		{"ElevenLabs", "elevenlabs", fetchElevenLabs},
+		{"Meshy", "meshy", fetchMeshy},
 	}
 	for _, cp := range c.Custom {
 		p := cp
-		defs = append(defs, def{p.Name, func(ctx context.Context, _ Creds) ([]Gauge, string, error) {
+		defs = append(defs, def{p.Name, "custom:" + p.Name, func(ctx context.Context, _ Creds) ([]Gauge, string, error) {
 			return fetchCustom(ctx, p)
 		}})
 	}
@@ -455,7 +478,7 @@ func fetchAll(c Creds) []Panel {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			items, note, err := d.fn(ctx, c)
-			p := Panel{Name: d.name, Updated: time.Now()}
+			p := Panel{Name: d.name, Cost: serviceCost(d.key, note, c.Costs), Updated: time.Now()}
 			if err != nil {
 				p.Err = err
 			} else {
@@ -585,9 +608,14 @@ func (m model) Init() tea.Cmd {
 	return tea.Batch(fetchCmd(m.creds, m.gen), clockCmd())
 }
 
+var reloadCreds = resolveCreds
+
 func fetchCmd(c Creds, gen int) tea.Cmd {
 	return func() tea.Msg {
-		return fetchedMsg{panels: fetchAll(c), at: time.Now(), gen: gen}
+		// OAuth tokens can rotate while the dashboard is running.
+		// Re-read the existing sources; never refresh or write credentials.
+		fresh, _ := reloadCreds()
+		return fetchedMsg{panels: fetchAll(fresh), at: time.Now(), gen: gen}
 	}
 }
 
@@ -797,7 +825,13 @@ func renderPanel(p Panel, lay frameLayout) string {
 		dot = errStyle.Render("●") + " "
 	}
 	title := dot + nameStyle.Render(truncateCells(p.Name, content-2))
-	if p.Note != "" && lipgloss.Width(title)+2+lipgloss.Width(p.Note) <= content {
+	// Keep the cost visible even when the plan name does not fit.
+	if p.Cost != "" && lipgloss.Width(title)+2+lipgloss.Width(p.Cost) <= content {
+		if p.Note != "" && lipgloss.Width(title)+4+lipgloss.Width(p.Note)+lipgloss.Width(p.Cost) <= content {
+			title += dimStyle.Render("  " + p.Note)
+		}
+		title = placeBetween(title, dimStyle.Render(p.Cost), content)
+	} else if p.Note != "" && lipgloss.Width(title)+2+lipgloss.Width(p.Note) <= content {
 		title += dimStyle.Render("  " + p.Note)
 	}
 	title = lipgloss.NewStyle().MaxWidth(content).Width(content).Render(title)
