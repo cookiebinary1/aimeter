@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -64,7 +65,7 @@ func TestAnthropicRefreshPersistsRotationAndMetadata(t *testing.T) {
 		t.Fatal("incorrect expiry")
 	}
 	info, _ := os.Stat(claudeCredsPath)
-	if info.Mode().Perm() != 0600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0600 {
 		t.Fatal("credentials permissions")
 	}
 }
