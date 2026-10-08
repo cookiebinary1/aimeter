@@ -268,6 +268,21 @@ Credentials and costs are reread on every TUI refresh so OAuth token rotation
 by Claude Code or Codex does not require restarting aimeter. Explicit token
 copies in credentials.json still take priority and must be kept current.
 
+### Expired Anthropic sessions
+
+In the interactive dashboard, an explicit expired-token response from Anthropic
+opens a confirmation prompt. Press `y` to renew the token, or `n`, Enter or Esc
+to decline. Declining suppresses the prompt for that token for the current run.
+Close Claude Code before confirming: renewal changes its credentials and a
+concurrent renewal may invalidate its login. Aimeter re-reads credentials before
+the request and before saving, but cannot eliminate races with Claude Code.
+
+Renewal is supported for Claude Code's macOS Keychain entry and credentials file.
+It preserves unrelated metadata and saves both rotated tokens and expiry.
+Copied tokens in aimeter's configuration and OMP credentials are not renewed.
+Non-interactive modes (`-once`, JSON and plain output) never renew tokens.
+A failed renewal requires opening Claude Code and logging in again.
+
 ### Custom providers
 
 For services aimeter does not know, add a `custom` entry: aimeter sends one
@@ -288,8 +303,11 @@ are skipped with a warning.
 
 ## Security
 
-aimeter only ever **reads** credentials, and only sends each key to that
-provider's own API over HTTPS. It never writes, refreshes or forwards a key.
+By default aimeter reads credentials and sends each key only to that provider's
+API over HTTPS. The interactive Anthropic renewal prompt is the sole exception:
+after explicit confirmation, it sends the refresh token to Anthropic's OAuth
+endpoint and updates Claude Code's existing credential storage. Tokens are never
+printed or passed as subprocess command-line arguments.
 It writes Anthropic usage and retry times to a local cache, but never the token.
 It has no telemetry, and `-show-creds` deliberately prints sources without
 values. `credentials.json` should be `chmod 600`; aimeter warns when it is

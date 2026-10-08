@@ -34,8 +34,11 @@ no network requests.
 - Code comments and all user-facing strings are **English**.
 - Keep the binary dependency-light: no cgo, no runtime beyond the Go
   standard library and the Bubble Tea/Lip Gloss stack already in `go.mod`.
-- Credentials are **read-only**. A provider must never write, refresh or
-  transmit a key anywhere except to that provider's own API.
+- Provider fetches are **read-only** and transmit keys only to the provider's API.
+  The interactive Anthropic renewal flow may update Claude Code credentials only
+  after explicit user confirmation with a warning. Non-interactive modes must
+  never renew credentials. Preserve metadata and never expose tokens in errors
+  or subprocess arguments.
 - New behaviour needs a test that fails without the change. Layout work is
   covered by `layout_test.go`, which asserts panels never overflow or wrap
   between 24 and 100 columns.

@@ -1,7 +1,7 @@
 package main
 
 // Credential resolution: a chain of non-invasive sources, first hit wins per
-// provider. Nothing is ever written or modified — the tool only reads.
+// provider. Resolution only reads; interactive renewal is a separate opt-in flow.
 //
 // Static API-key providers (zai, minimax, openrouter, elevenlabs, meshy):
 //

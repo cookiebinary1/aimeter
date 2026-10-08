@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"os"
@@ -60,6 +61,7 @@ var httpc = &http.Client{Timeout: 15 * time.Second}
 type httpStatusError struct {
 	code       int
 	retryAfter string
+	expired    bool
 }
 
 func (e *httpStatusError) Error() string { return fmt.Sprintf("HTTP %d", e.code) }
@@ -79,7 +81,18 @@ func getJSON(ctx context.Context, url string, hdr map[string]string, out any) er
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return &httpStatusError{code: resp.StatusCode, retryAfter: resp.Header.Get("Retry-After")}
+		status := &httpStatusError{code: resp.StatusCode, retryAfter: resp.Header.Get("Retry-After")}
+		if resp.StatusCode == http.StatusUnauthorized && req.URL.Host == "api.anthropic.com" && req.URL.Path == "/api/oauth/usage" {
+			var body struct {
+				Error struct {
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if json.NewDecoder(io.LimitReader(resp.Body, 8192)).Decode(&body) == nil {
+				status.expired = strings.Contains(strings.ToLower(body.Error.Message), "access token has expired")
+			}
+		}
+		return status
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }
@@ -589,15 +602,22 @@ type model struct {
 	// permanently doubles the auto-refresh rate.
 	gen int
 	// static marks a one-shot render (-once): no key hints, no refresh timer.
-	static bool
+	static         bool
+	anthPrompt     bool
+	anthRefreshing bool
+	anthAsked      string
+	anthNotice     string
+	anthSource     string
 }
 
 type tickMsg struct{ gen int }
 type clockMsg time.Time
 type fetchedMsg struct {
-	panels []Panel
-	at     time.Time
-	gen    int
+	panels     []Panel
+	creds      Creds
+	anthSource string
+	at         time.Time
+	gen        int
 }
 
 func initialModel(c Creds) model {
@@ -614,8 +634,8 @@ func fetchCmd(c Creds, gen int) tea.Cmd {
 	return func() tea.Msg {
 		// OAuth tokens can rotate while the dashboard is running.
 		// Re-read the existing sources; never refresh or write credentials.
-		fresh, _ := reloadCreds()
-		return fetchedMsg{panels: fetchAll(fresh), at: time.Now(), gen: gen}
+		fresh, src := reloadCreds()
+		return fetchedMsg{panels: fetchAll(fresh), creds: fresh, anthSource: src["anthropic"], at: time.Now(), gen: gen}
 	}
 }
 
@@ -635,6 +655,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// from the taller frame on screen.
 		return m, tea.ClearScreen
 	case tea.KeyMsg:
+		if m.anthPrompt {
+			switch msg.String() {
+			case "y":
+				m.anthPrompt, m.anthRefreshing = false, true
+				m.gen++
+				return m, anthropicRefreshCmd(m.creds.AnthToken, m.anthSource)
+			case "n", "enter", "esc":
+				m.anthPrompt = false
+				m.anthNotice = "Refresh declined. Open Claude Code to renew the token."
+				return m, refreshTick(m.interval, m.gen)
+			case "q", "ctrl+c":
+				return m, tea.Quit
+			}
+			return m, nil
+		}
+		if m.anthRefreshing && msg.String() != "ctrl+c" {
+			return m, nil
+		}
 		switch msg.String() {
 		case "q", "esc", "ctrl+c":
 			return m, tea.Quit
@@ -648,11 +686,37 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil // superseded by a manual refresh
 		}
 		m.panels = msg.panels
+		m.creds, m.anthSource = msg.creds, msg.anthSource
+		if !m.static && !m.anthRefreshing {
+			for _, p := range m.panels {
+				if p.Name == "Anthropic" && anthropicExpired(p.Err) && m.creds.AnthToken != m.anthAsked {
+					m.anthAsked = m.creds.AnthToken
+					if supportedAnthropicSource(m.anthSource) {
+						m.anthPrompt = true
+						m.anthNotice = ""
+					} else {
+						m.anthNotice = "Anthropic token expired. Renew it in its source; copied tokens cannot be refreshed."
+					}
+				}
+			}
+		}
 		m.last = msg.at
 		m.loading = false
+		if m.anthPrompt {
+			return m, nil
+		}
 		return m, refreshTick(m.interval, m.gen)
+	case anthropicRefreshMsg:
+		m.anthRefreshing = false
+		if msg.err != nil {
+			m.anthNotice = "Anthropic refresh failed: " + msg.err.Error()
+			return m, refreshTick(m.interval, m.gen)
+		}
+		m.anthNotice = "Anthropic token renewed."
+		m.loading = true
+		return m, fetchCmd(m.creds, m.gen)
 	case tickMsg:
-		if msg.gen != m.gen {
+		if msg.gen != m.gen || m.anthPrompt || m.anthRefreshing {
 			return m, nil // timer from an abandoned refresh chain
 		}
 		return m, fetchCmd(m.creds, m.gen)
@@ -692,6 +756,20 @@ func (m model) View() string {
 	b.WriteString(placeBetween(left, right, w))
 	b.WriteString("\n\n")
 
+	if !m.static {
+		message := m.anthNotice
+		if m.anthPrompt {
+			message = "Anthropic access token expired. Refresh it now?\nWARNING: This changes Claude Code credentials. A concurrent refresh may invalidate its login. Close Claude Code first.\ny refresh / n cancel (default: no)"
+		} else if m.anthRefreshing {
+			message = "Renewing Anthropic token..."
+		}
+		if message != "" {
+			b.WriteString(lipgloss.NewStyle().Width(w).Render(message) + "\n\n")
+		}
+		if m.anthPrompt || m.anthRefreshing {
+			return strings.TrimRight(b.String(), "\n")
+		}
+	}
 	lay := computeLayout(m.panels, w)
 	for _, p := range m.panels {
 		b.WriteString(renderPanel(p, lay))
