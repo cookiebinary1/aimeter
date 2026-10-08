@@ -283,6 +283,20 @@ Copied tokens in aimeter's configuration and OMP credentials are not renewed.
 Non-interactive modes (`-once`, JSON and plain output) never renew tokens.
 A failed renewal requires opening Claude Code and logging in again.
 
+### Anthropic request frequency
+
+Anthropic usage requests are limited to one attempt every 15 minutes on this
+machine. The next allowed request time is saved in the OS cache directory, so
+restarting aimeter, pressing `r`, running multiple instances or rotating an OAuth
+token does not bypass the cooldown. Failed requests also start the cooldown.
+An HTTP 429 extends it when `Retry-After` specifies a longer wait.
+
+During the wait, aimeter displays cached usage with its age. Data older than two
+hours is hidden. If no cached data exists, it displays the remaining wait.
+This applies to interactive, one-shot, plain and JSON modes. Other providers keep
+their existing refresh frequency. If the cooldown cannot be saved, aimeter skips
+the Anthropic request rather than making an unthrottled request.
+
 ### Custom providers
 
 For services aimeter does not know, add a `custom` entry: aimeter sends one
@@ -308,7 +322,8 @@ API over HTTPS. The interactive Anthropic renewal prompt is the sole exception:
 after explicit confirmation, it sends the refresh token to Anthropic's OAuth
 endpoint and updates Claude Code's existing credential storage. Tokens are never
 printed or passed as subprocess command-line arguments.
-It writes Anthropic usage and retry times to a local cache, but never the token.
+It writes Anthropic usage, request cooldowns and retry times to a local cache,
+but never the token.
 It has no telemetry, and `-show-creds` deliberately prints sources without
 values. `credentials.json` should be `chmod 600`; aimeter warns when it is
 group- or world-readable.

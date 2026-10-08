@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestFetchCmdReloadsRotatedToken(t *testing.T) {
@@ -26,6 +28,13 @@ func TestFetchCmdReloadsRotatedToken(t *testing.T) {
 	cmd := fetchCmd(Creds{AnthToken: "startup"}, 0)
 	cmd()
 	token = "rotated"
+	blocked := cmd().(fetchedMsg)
+	if blocked.creds.AnthToken != "rotated" || len(seen) != 1 {
+		t.Fatal("rotation must reload credentials without bypassing cooldown")
+	}
+	if err := writeAnthropicState(filepath.Join(anthropicCacheDir, "anthropic-request.json"), anthropicRequestState{NextAt: time.Now().Add(-time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
 	cmd()
 	if strings.Join(seen, ",") != "Bearer old,Bearer rotated" {
 		t.Fatalf("requests = %v", seen)

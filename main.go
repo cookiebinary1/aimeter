@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -110,12 +111,14 @@ func fetchAnthropic(ctx context.Context, c Creds) ([]Gauge, string, error) {
 		return nil, "", fmt.Errorf("missing anthropic credential (credentials.json / keychain / -tags omp)")
 	}
 	cache := readAnthropicCache(c.AnthToken)
-	if time.Now().Before(cache.RetryAt) {
-		return cachedAnthropic(cache)
+	state, release, gateErr := reserveAnthropicRequest(cache)
+	if gateErr != nil {
+		return nil, "", gateErr
 	}
-	if len(cache.Items) > 0 && time.Since(cache.FetchedAt) < 5*time.Minute {
-		return cache.Items, c.AnthEmail, nil
+	if release == nil {
+		return cooldownAnthropic(cache, state)
 	}
+	defer release()
 	var j struct {
 		FiveHour     *anthBucket `json:"five_hour"`
 		SevenDay     *anthBucket `json:"seven_day"`
@@ -127,11 +130,24 @@ func fetchAnthropic(ctx context.Context, c Creds) ([]Gauge, string, error) {
 		"User-Agent":     "claude-code/2.0",
 	}, &j)
 	if err != nil {
-		if status, ok := err.(*httpStatusError); ok && status.code == http.StatusTooManyRequests {
-			cache.RetryAt = anthropicRetryAt(status.retryAfter)
-			writeAnthropicCache(c.AnthToken, cache)
-			return cachedAnthropic(cache)
+		cache.Failed = true
+		if status, ok := err.(*httpStatusError); ok {
+			cache.HTTPCode, cache.Expired = status.code, status.expired
+			if status.code == http.StatusTooManyRequests {
+				cache.RetryAt = anthropicRetryAt(status.retryAfter)
+				if cache.RetryAt.After(state.NextAt) {
+					state.NextAt = cache.RetryAt
+				}
+				state.RateLimited = true
+				if writeErr := writeAnthropicState(filepath.Join(anthropicCacheDir, "anthropic-request.json"), state); writeErr != nil {
+					_ = writeAnthropicCache(c.AnthToken, cache)
+					return nil, "", fmt.Errorf("cannot persist Anthropic rate limit; request skipped")
+				}
+				_ = writeAnthropicCache(c.AnthToken, cache)
+				return cooldownAnthropic(cache, state)
+			}
 		}
+		_ = writeAnthropicCache(c.AnthToken, cache)
 		return nil, "", err
 	}
 	var gs []Gauge
@@ -144,6 +160,8 @@ func fetchAnthropic(ctx context.Context, c Creds) ([]Gauge, string, error) {
 	add("7d", j.SevenDay, 7*24*time.Hour)
 	add("opus 7d", j.SevenDayOpus, 7*24*time.Hour)
 	if len(gs) == 0 {
+		cache.Failed = true
+		_ = writeAnthropicCache(c.AnthToken, cache)
 		return nil, "", fmt.Errorf("empty response")
 	}
 	note := ""
