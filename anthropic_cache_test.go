@@ -217,3 +217,26 @@ func TestAnthropicStaleLockRecoversAfterCrash(t *testing.T) {
 	}
 	release()
 }
+
+func TestAnthropicRotationRetainsAccountUsage(t *testing.T) {
+	isolateAnthropicCache(t)
+	calls := 0
+	httpc.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"five_hour":{"utilization":42}}`))}, nil
+	})
+	if _, _, err := fetchAnthropic(context.Background(), Creds{AnthToken: "first", AnthAccount: "account-a"}); err != nil {
+		t.Fatal(err)
+	}
+	gs, note, err := fetchAnthropic(context.Background(), Creds{AnthToken: "rotated", AnthAccount: "account-a"})
+	if err != nil || len(gs) != 1 || gs[0].Used != 42 || !strings.Contains(note, "cached") || calls != 1 {
+		t.Fatalf("rotation: %v %q %v calls=%d", gs, note, err, calls)
+	}
+	if _, _, err := fetchAnthropic(context.Background(), Creds{AnthToken: "other", AnthAccount: "account-b"}); err == nil {
+		t.Fatal("usage leaked to another account")
+	}
+	_ = writeAnthropicCache("expired", anthropicCache{HTTPCode: 401, Expired: true})
+	if _, _, err := fetchAnthropic(context.Background(), Creds{AnthToken: "expired", AnthAccount: "account-a"}); !anthropicExpired(err) {
+		t.Fatalf("lost expired token: %v", err)
+	}
+}

@@ -3,10 +3,10 @@ package main
 // Credential resolution: a chain of non-invasive sources, first hit wins per
 // provider. Resolution only reads; interactive renewal is a separate opt-in flow.
 //
-// Static API-key providers (zai, minimax, openrouter, elevenlabs, meshy):
+// Static API-key providers (zai, minimax, openrouter, elevenlabs, meshy, alibaba):
 //
 //	1. env       ZAI_API_KEY, MINIMAX_API_KEY, OPENROUTER_API_KEY,
-//	             ELEVENLABS_API_KEY, MESHY_API_KEY
+//	             ELEVENLABS_API_KEY, MESHY_API_KEY, ALIBABA_API_KEY
 //	2. config    ~/.config/aimeter/credentials.json  (chmod 600)
 //	3. keychain  macOS only: `security find-generic-password -s aimeter -a <name>`
 //	4. omp       local OMP agent.db (build with -tags omp)
@@ -14,7 +14,7 @@ package main
 //
 // OAuth providers rotate their tokens, so live sources beat frozen copies:
 //
-//	anthropic:  config → OMP db (-tags omp) → Claude Code's own storage
+//	anthropic:  config → Claude Code's own storage → OMP db (-tags omp)
 //	            (macOS keychain entry, or ~/.claude/.credentials.json)
 //	codex:      config → ~/.codex/auth.json (Codex CLI's own file)
 
@@ -30,9 +30,10 @@ import (
 
 // Injectable for tests.
 var (
-	configPath      = defaultConfigPath()
-	codexAuthPath   = defaultCodexAuthPath()
-	claudeCredsPath = defaultClaudeCredsPath()
+	configPath        = defaultConfigPath()
+	codexAuthPath     = defaultCodexAuthPath()
+	claudeCredsPath   = defaultClaudeCredsPath()
+	claudeProfilePath = defaultClaudeProfilePath()
 )
 
 func defaultConfigPath() string {
@@ -44,6 +45,11 @@ func defaultConfigPath() string {
 	// the historical ~/.config/aimeter/ location and matches user expectation.
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".config", "aimeter", "credentials.json")
+}
+
+func defaultClaudeProfilePath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".claude.json")
 }
 
 func defaultClaudeCredsPath() string {
@@ -65,12 +71,19 @@ type credentialsFile struct {
 	OpenRouter apiKey            `json:"openrouter"`
 	ElevenLabs apiKey            `json:"elevenlabs"`
 	Meshy      apiKey            `json:"meshy"`
+	Alibaba    alibabaCreds      `json:"alibaba"`
 	Custom     []customProvider  `json:"custom"`
 	Costs      map[string]string `json:"costs"`
 }
 
 type apiKey struct {
 	APIKey string `json:"api_key"`
+}
+
+type alibabaCreds struct {
+	APIKey  string `json:"api_key"`
+	BaseURL string `json:"base_url,omitempty"`
+	Cookie  string `json:"cookie,omitempty"`
 }
 
 type oauthPair struct {
@@ -211,9 +224,15 @@ func resolveCreds() (Creds, map[string]string) {
 	c.OpenRouter = resolveKey("openrouter", "OPENROUTER_API_KEY", cfg.OpenRouter.APIKey)
 	c.EleKey = resolveKey("elevenlabs", "ELEVENLABS_API_KEY", cfg.ElevenLabs.APIKey)
 	c.MeshyKey = resolveKey("meshy", "MESHY_API_KEY", cfg.Meshy.APIKey)
-
-	// Personal-machine fallbacks; no-op in default builds.
-	ompFallback(&c, src)
+	c.AliKey = resolveKey("alibaba", "ALIBABA_API_KEY", cfg.Alibaba.APIKey)
+	c.AliBaseURL = os.Getenv("ALIBABA_BASE_URL")
+	if c.AliBaseURL == "" {
+		c.AliBaseURL = cfg.Alibaba.BaseURL
+	}
+	c.AliCookie = os.Getenv("ALIBABA_COOKIE")
+	if c.AliCookie == "" {
+		c.AliCookie = cfg.Alibaba.Cookie
+	}
 
 	// OAuth providers: explicit config copy first, then live sources.
 	if cfg.Anthropic.AccessToken != "" {
@@ -223,6 +242,7 @@ func resolveCreds() (Creds, map[string]string) {
 	if c.AnthToken == "" {
 		if t, s := claudeOAuthToken(); t != "" {
 			c.AnthToken = t
+			c.AnthAccount = claudeAccountIdentity()
 			src["anthropic"] = s
 		}
 	}
@@ -236,6 +256,9 @@ func resolveCreds() (Creds, map[string]string) {
 			src["codex"] = "codex-auth.json"
 		}
 	}
+
+	// Personal-machine fallbacks; no-op in default builds.
+	ompFallback(&c, src)
 
 	// User-defined providers come from the config file only.
 	skipped := 0
@@ -260,7 +283,7 @@ func resolveCreds() (Creds, map[string]string) {
 }
 
 // credProviders is the display/report order.
-var credProviders = []string{"anthropic", "codex", "zai", "minimax", "openrouter", "elevenlabs", "meshy"}
+var credProviders = []string{"anthropic", "codex", "zai", "minimax", "openrouter", "elevenlabs", "meshy", "alibaba"}
 
 // printCredSources reports where each provider resolved from — never the keys.
 func printCredSources(src map[string]string, custom []customProvider) {
@@ -277,4 +300,23 @@ func printCredSources(src map[string]string, custom []customProvider) {
 	for _, p := range rows {
 		fmt.Printf("%-*s  %s\n", w, p, src[p])
 	}
+}
+
+// Include the organization because usage limits can differ between memberships.
+// Never use this identity for explicit tokens from another credential source.
+func claudeAccountIdentity() string {
+	b, err := os.ReadFile(claudeProfilePath)
+	if err != nil {
+		return ""
+	}
+	var profile struct {
+		Account struct {
+			ID  string `json:"accountUuid"`
+			Org string `json:"organizationUuid"`
+		} `json:"oauthAccount"`
+	}
+	if json.Unmarshal(b, &profile) != nil || profile.Account.ID == "" {
+		return ""
+	}
+	return profile.Account.ID + ":" + profile.Account.Org
 }

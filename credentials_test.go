@@ -11,16 +11,17 @@ import (
 func isolate(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	oldCfg, oldCodex, oldClaude := configPath, codexAuthPath, claudeCredsPath
+	oldCfg, oldCodex, oldClaude, oldProfile := configPath, codexAuthPath, claudeCredsPath, claudeProfilePath
 	configPath = filepath.Join(dir, "credentials.json")
 	codexAuthPath = filepath.Join(dir, "auth.json")
 	claudeCredsPath = filepath.Join(dir, "claude-creds.json")
+	claudeProfilePath = filepath.Join(dir, "claude-profile.json")
 	t.Cleanup(func() {
-		configPath, codexAuthPath, claudeCredsPath = oldCfg, oldCodex, oldClaude
+		configPath, codexAuthPath, claudeCredsPath, claudeProfilePath = oldCfg, oldCodex, oldClaude, oldProfile
 	})
 	for _, k := range []string{
 		"ZAI_API_KEY", "MINIMAX_API_KEY", "OPENROUTER_API_KEY",
-		"ELEVENLABS_API_KEY", "MESHY_API_KEY",
+		"ELEVENLABS_API_KEY", "MESHY_API_KEY", "ALIBABA_API_KEY", "ALIBABA_BASE_URL", "ALIBABA_COOKIE",
 	} {
 		t.Setenv(k, "")
 	}
@@ -139,5 +140,50 @@ func TestClaudeTokenFromFile(t *testing.T) {
 	}
 	if got := claudeTokenFromFile(p); got != "" {
 		t.Errorf("garbage: got %q, want empty", got)
+	}
+}
+
+func TestAlibabaExplicitURLPrecedence(t *testing.T) {
+	isolate(t)
+	writeConfig(t, `{"alibaba":{"api_key":"config-key","base_url":"https://config.example/compatible-mode/v1","cookie":"session=config"}}`)
+	t.Setenv("ALIBABA_API_KEY", "env-key")
+
+	c, src := resolveCreds()
+	if c.AliKey != "env-key" || src["alibaba"] != "env" || c.AliBaseURL != "https://config.example/compatible-mode/v1" {
+		t.Fatalf("Alibaba did not preserve env key with configured endpoint: source=%s url=%s", src["alibaba"], c.AliBaseURL)
+	}
+	if c.AliCookie != "session=config" {
+		t.Fatal("configured console session was not resolved")
+	}
+
+	t.Setenv("ALIBABA_BASE_URL", "https://env.example/compatible-mode/v1")
+	t.Setenv("ALIBABA_COOKIE", "session=env")
+	c, _ = resolveCreds()
+	if c.AliBaseURL != "https://env.example/compatible-mode/v1" {
+		t.Fatalf("environment endpoint did not override config: %s", c.AliBaseURL)
+	}
+	if c.AliCookie != "session=env" {
+		t.Fatal("environment console session did not override config")
+	}
+}
+
+func TestClaudeAccountIdentity(t *testing.T) {
+	old := claudeProfilePath
+	claudeProfilePath = filepath.Join(t.TempDir(), "profile.json")
+	t.Cleanup(func() { claudeProfilePath = old })
+	if got := claudeAccountIdentity(); got != "" {
+		t.Fatal("missing profile returned identity")
+	}
+	for _, tc := range []struct{ body, want string }{
+		{`{"oauthAccount":{"accountUuid":"user","organizationUuid":"org"}}`, "user:org"},
+		{`{"oauthAccount":{"organizationUuid":"org"}}`, ""},
+		{`invalid`, ""},
+	} {
+		if err := os.WriteFile(claudeProfilePath, []byte(tc.body), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if got := claudeAccountIdentity(); got != tc.want {
+			t.Fatalf("identity=%q want=%q", got, tc.want)
+		}
 	}
 }

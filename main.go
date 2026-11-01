@@ -41,17 +41,21 @@ type Panel struct {
 }
 
 type Creds struct {
-	AnthToken  string
-	AnthEmail  string
-	CodexToken string
-	CodexAcct  string
-	ZaiKey     string
-	MmKey      string
-	OpenRouter string
-	EleKey     string
-	MeshyKey   string
-	Custom     []customProvider
-	Costs      map[string]string
+	AnthToken   string
+	AnthAccount string
+	AnthEmail   string
+	CodexToken  string
+	CodexAcct   string
+	ZaiKey      string
+	MmKey       string
+	OpenRouter  string
+	EleKey      string
+	MeshyKey    string
+	AliKey      string
+	AliBaseURL  string
+	AliCookie   string
+	Custom      []customProvider
+	Costs       map[string]string
 }
 
 // ---------------------------------------------------------------------------
@@ -111,6 +115,14 @@ func fetchAnthropic(ctx context.Context, c Creds) ([]Gauge, string, error) {
 		return nil, "", fmt.Errorf("missing anthropic credential (credentials.json / keychain / -tags omp)")
 	}
 	cache := readAnthropicCache(c.AnthToken)
+	// Successful usage belongs to the account, while authentication failures
+	// belong to one token. Keep those separate when Claude rotates tokens.
+	if c.AnthAccount != "" {
+		accountCache := readAnthropicCache("account:" + c.AnthAccount)
+		if accountCache.FetchedAt.After(cache.FetchedAt) {
+			cache.Items, cache.FetchedAt = accountCache.Items, accountCache.FetchedAt
+		}
+	}
 	state, release, gateErr := reserveAnthropicRequest(cache)
 	if gateErr != nil {
 		return nil, "", gateErr
@@ -168,7 +180,11 @@ func fetchAnthropic(ctx context.Context, c Creds) ([]Gauge, string, error) {
 	if c.AnthEmail != "" {
 		note = c.AnthEmail
 	}
-	writeAnthropicCache(c.AnthToken, anthropicCache{FetchedAt: time.Now(), Items: gs})
+	success := anthropicCache{FetchedAt: time.Now(), Items: gs}
+	_ = writeAnthropicCache(c.AnthToken, success)
+	if c.AnthAccount != "" {
+		_ = writeAnthropicCache("account:"+c.AnthAccount, success)
+	}
 	return gs, note, nil
 }
 
@@ -481,27 +497,36 @@ func fetchMeshy(ctx context.Context, c Creds) ([]Gauge, string, error) {
 
 func fetchAll(c Creds) []Panel {
 	type def struct {
-		name string
-		key  string
-		fn   func(context.Context, Creds) ([]Gauge, string, error)
+		name       string
+		key        string
+		credential string
+		fn         func(context.Context, Creds) ([]Gauge, string, error)
 	}
 	defs := []def{
-		{"Anthropic", "anthropic", fetchAnthropic},
-		{"OpenAI Codex", "codex", fetchCodex},
-		{"Z.AI", "zai", fetchZai},
-		{"MiniMax Code", "minimax", fetchMinimax},
-		{"OpenRouter", "openrouter", fetchOpenRouter},
-		{"ElevenLabs", "elevenlabs", fetchElevenLabs},
-		{"Meshy", "meshy", fetchMeshy},
+		{"Anthropic", "anthropic", c.AnthToken, fetchAnthropic},
+		{"OpenAI Codex", "codex", c.CodexToken, fetchCodex},
+		{"Z.AI", "zai", c.ZaiKey, fetchZai},
+		{"MiniMax Code", "minimax", c.MmKey, fetchMinimax},
+		{"OpenRouter", "openrouter", c.OpenRouter, fetchOpenRouter},
+		{"ElevenLabs", "elevenlabs", c.EleKey, fetchElevenLabs},
+		{"Meshy", "meshy", c.MeshyKey, fetchMeshy},
+		{"Alibaba", "alibaba", c.AliKey, fetchAlibaba},
 	}
+	configured := defs[:0]
+	for _, d := range defs {
+		if d.credential != "" {
+			configured = append(configured, d)
+		}
+	}
+	defs = configured
 	for _, cp := range c.Custom {
 		p := cp
-		defs = append(defs, def{p.Name, "custom:" + p.Name, func(ctx context.Context, _ Creds) ([]Gauge, string, error) {
+		defs = append(defs, def{p.Name, "custom:" + p.Name, "", func(ctx context.Context, _ Creds) ([]Gauge, string, error) {
 			return fetchCustom(ctx, p)
 		}})
 	}
-	panels := make([]Panel, len(defs))
 	var wg sync.WaitGroup
+	results := make([]Panel, len(defs))
 	for i, d := range defs {
 		wg.Add(1)
 		go func(i int, d def) {
@@ -515,11 +540,11 @@ func fetchAll(c Creds) []Panel {
 			} else {
 				p.Items, p.Note = items, note
 			}
-			panels[i] = p
+			results[i] = p
 		}(i, d)
 	}
 	wg.Wait()
-	return panels
+	return results
 }
 
 // ---------------------------------------------------------------------------

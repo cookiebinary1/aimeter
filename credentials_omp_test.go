@@ -145,3 +145,48 @@ func TestRCScanOpenRouterIgnoresForeignKeys(t *testing.T) {
 		t.Errorf("key = %q, want empty", got)
 	}
 }
+
+func TestAlibabaOMPEndpointWithEarlierKey(t *testing.T) {
+	path := newAgentDB(t, map[string]string{
+		"alibaba-coding-plan": `{"access":"omp-key","enterpriseUrl":"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"}`,
+	})
+	prev := ompDBPath
+	ompDBPath = path
+	t.Cleanup(func() { ompDBPath = prev })
+
+	c := Creds{AliKey: "env-key"}
+	src := map[string]string{"alibaba": "env"}
+	ompFallback(&c, src)
+	if c.AliKey != "env-key" || src["alibaba"] != "env" || c.AliBaseURL != "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1" {
+		t.Fatalf("OMP endpoint fallback changed earlier credential or omitted endpoint: source=%s url=%s", src["alibaba"], c.AliBaseURL)
+	}
+
+	c.AliBaseURL = "https://explicit.example/compatible-mode/v1"
+	ompFallback(&c, src)
+	if c.AliBaseURL != "https://explicit.example/compatible-mode/v1" {
+		t.Fatalf("OMP overwrote explicit endpoint: %s", c.AliBaseURL)
+	}
+}
+
+func TestOMPBuildPrefersLiveClaudeCredentials(t *testing.T) {
+	isolate(t)
+	t.Setenv("PATH", t.TempDir()) // prevent access to this machine's macOS keychain
+	path := newAgentDB(t, map[string]string{"anthropic": `{"access":"stale-omp-token"}`})
+	prev := ompDBPath
+	ompDBPath = path
+	t.Cleanup(func() { ompDBPath = prev })
+	if err := os.WriteFile(claudeCredsPath, []byte(`{"claudeAiOauth":{"accessToken":"live-claude-token"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, src := resolveCreds()
+	if c.AnthToken != "live-claude-token" || src["anthropic"] != "claude-code:credentials-file" {
+		t.Fatalf("OMP replaced live Claude credentials: source=%s", src["anthropic"])
+	}
+	if err := os.Remove(claudeCredsPath); err != nil {
+		t.Fatal(err)
+	}
+	c, src = resolveCreds()
+	if c.AnthToken != "stale-omp-token" || src["anthropic"] != "omp" {
+		t.Fatalf("OMP fallback was lost when Claude credentials were absent: source=%s", src["anthropic"])
+	}
+}

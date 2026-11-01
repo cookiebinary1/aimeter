@@ -47,6 +47,17 @@ func ompFallback(c *Creds, src map[string]string) {
 			}
 		}
 	}
+	if d, ok := rows["alibaba-coding-plan"].(map[string]any); ok {
+		if c.AliKey == "" {
+			if k, _ := d["access"].(string); k != "" {
+				c.AliKey = k
+				src["alibaba"] = "omp"
+			}
+		}
+		if c.AliBaseURL == "" {
+			c.AliBaseURL, _ = d["enterpriseUrl"].(string)
+		}
+	}
 	if c.OpenRouter == "" {
 		if k := rcScanOpenRouter(); k != "" {
 			c.OpenRouter = k
