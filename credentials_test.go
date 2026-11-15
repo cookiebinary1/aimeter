@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -157,7 +158,8 @@ func TestFirstRunDetectWritesDetectedKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o600 {
+	// Windows does not carry POSIX permission bits.
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Errorf("perm = %o, want 600", fi.Mode().Perm())
 	}
 	cfg, err := readConfigFile()

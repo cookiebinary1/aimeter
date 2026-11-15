@@ -729,10 +729,10 @@ type model struct {
 	// aliPrompt/aliLogining drive the bl console login offer: when the Alibaba
 	// panel reports an expired console session, the user can run the
 	// interactive `bl auth login` without leaving the dashboard.
-	aliPrompt    bool
-	aliLogining  bool
-	aliPrompted  bool
-	aliNotice    string
+	aliPrompt   bool
+	aliLogining bool
+	aliPrompted bool
+	aliNotice   string
 }
 
 type tickMsg struct{ gen int }
