@@ -18,6 +18,7 @@ for:
 - Anthropic
 - Codex
 - Z.ai
+- Kimi
 - MiniMax
 - OpenRouter
 - ElevenLabs
@@ -115,8 +116,13 @@ aimeter -once        # render the dashboard once, no TUI
 aimeter -plain       # Markdown table — for scripts, logs and agents
 aimeter -json        # machine-readable JSON — for programs
 aimeter -show-creds  # which source each credential resolved from
+aimeter -admin       # add, edit, or remove provider credentials (TUI)
 aimeter -version     # version string
 ```
+
+The dashboard scrolls when the panels exceed the terminal height:
+`j`/`↓` and `k`/`↑` move by three lines, `PgUp`/`PgDn` by a page,
+`Home` jumps to the top, and the mouse wheel works too.
 
 If `aimeter` is run with no flags but **without an interactive terminal**
 (piped stdout/stdin, CI, cron, deployment scripts), it auto-detects this and
@@ -201,7 +207,7 @@ panel. Custom entries also remain visible on failure.
 
 | Priority | Source | Notes |
 | --- | --- | --- |
-| 1 | Environment | `ZAI_API_KEY`, `MINIMAX_API_KEY`, `OPENROUTER_API_KEY`, `ELEVENLABS_API_KEY`, `MESHY_API_KEY`, `ALIBABA_API_KEY` |
+| 1 | Environment | `ZAI_API_KEY`, `KIMI_API_KEY` (or `MOONSHOT_API_KEY`), `MINIMAX_API_KEY`, `OPENROUTER_API_KEY`, `ELEVENLABS_API_KEY`, `MESHY_API_KEY`, `ALIBABA_API_KEY` |
 | 2 | `~/.config/aimeter/credentials.json` | JSON schema below; keep it `chmod 600` |
 | 3 | macOS Keychain | `security find-generic-password -s aimeter -a <provider>` |
 | 4 | OMP agent.db | only in `-tags omp` builds (personal-machine heuristics) |
@@ -225,11 +231,26 @@ directory; authentication errors remain specific to each token.
 `aimeter -show-creds` prints which source each provider resolved from — never
 the key values themselves.
 
+### First run and admin
+
+On the first run (no `credentials.json` yet), aimeter probes the environment
+and the macOS keychain for API keys and persists what it finds to
+`credentials.json` (`chmod 600`). OAuth providers (Anthropic, Codex) are never
+copied — their live sources keep working without a frozen token. The detection
+runs only once; an existing file is never overwritten.
+
+`aimeter -admin` opens a small TUI that lists every provider with its resolved
+source. `Enter` pastes a key for the selected provider (input is hidden and
+stored in `credentials.json`), `x` removes the stored copy, and keys supplied
+by environment variables are marked as env-managed. The dashboard then shows
+exactly the providers that resolve credentials.
+
 ### credentials.json
 
 ```json
 {
   "zai":        { "api_key": "..." },
+  "kimi":       { "api_key": "..." },
   "minimax":    { "api_key": "..." },
   "openrouter": { "api_key": "..." },
   "elevenlabs": { "api_key": "..." },
@@ -256,6 +277,15 @@ the key values themselves.
 
 Every field is optional — provide only the providers you use. Group/world
 readable permissions produce a warning at startup.
+
+### Kimi for Coding
+
+The Kimi panel reads the **Kimi for Coding** plan quota (the same
+`/coding/v1/usages` endpoint the Kimi Code CLI `/usage` command uses) and shows
+the `5h`, `7d` (when present), and `month` windows. Supply the plan's
+`sk-kimi-...` key via `KIMI_API_KEY` (or `MOONSHOT_API_KEY`,
+`kimi.api_key`, or the `kimi` keychain account). An open-platform
+`platform.kimi.ai` pay-as-you-go key cannot read these quota windows.
 
 ### Alibaba Token Plan
 
@@ -326,7 +356,11 @@ and aimeter configuration values take precedence. An inference-only OMP record
 still needs a separate console login.
 
 If `bl` is missing or its session expires, the Alibaba panel shows login
-guidance. Check `bl --version`, repeat console login, and rerun the quota check
+guidance. With an expired console session the TUI detects it and offers the
+login itself: press `y` and aimeter suspends the dashboard, runs
+`bl auth login --console` (finish in the browser), then refreshes the quota.
+The prompt appears once per expiry, not on every refresh. Check `bl --version`,
+repeat console login, and rerun the quota check
 above. If usage is missing or belongs to another subscription, check the console
 account, `default` profile, and region. No model inference call is needed to
 verify quota access.

@@ -20,7 +20,7 @@ func isolate(t *testing.T) string {
 		configPath, codexAuthPath, claudeCredsPath, claudeProfilePath = oldCfg, oldCodex, oldClaude, oldProfile
 	})
 	for _, k := range []string{
-		"ZAI_API_KEY", "MINIMAX_API_KEY", "OPENROUTER_API_KEY",
+		"ZAI_API_KEY", "KIMI_API_KEY", "MOONSHOT_API_KEY", "MINIMAX_API_KEY", "OPENROUTER_API_KEY",
 		"ELEVENLABS_API_KEY", "MESHY_API_KEY", "ALIBABA_API_KEY", "ALIBABA_BASE_URL", "ALIBABA_COOKIE",
 	} {
 		t.Setenv(k, "")
@@ -73,6 +73,19 @@ func TestResolveChainNoConfig(t *testing.T) {
 	}
 }
 
+// MOONSHOT_API_KEY is the name Moonshot's own docs use; it must resolve the
+// Kimi panel when KIMI_API_KEY is unset.
+func TestResolveChainKimiMoonshotAlias(t *testing.T) {
+	isolate(t)
+	t.Setenv("MOONSHOT_API_KEY", "env-moonshot")
+
+	c, src := resolveCreds()
+
+	if c.KimiKey != "env-moonshot" || src["kimi"] != "env" {
+		t.Errorf("kimi: key=%q src=%q, want env-moonshot/env", c.KimiKey, src["kimi"])
+	}
+}
+
 // config can also carry the OAuth pairs; codex falls back to its auth.json.
 func TestResolveChainOAuth(t *testing.T) {
 	isolate(t)
@@ -119,6 +132,126 @@ func TestResolveChainBadConfig(t *testing.T) {
 	}
 	if c.MeshyKey != "env-meshy" {
 		t.Errorf("meshy: %q, want env-meshy", c.MeshyKey)
+	}
+}
+
+// First run: keys found in the environment are persisted to a fresh
+// credentials.json with 0600 permissions; OAuth providers are never copied.
+func TestFirstRunDetectWritesDetectedKeys(t *testing.T) {
+	isolate(t)
+	oldLookup := keychainLookup
+	keychainLookup = func(string) string { return "" }
+	t.Cleanup(func() { keychainLookup = oldLookup })
+
+	t.Setenv("ZAI_API_KEY", "detected-zai")
+	t.Setenv("KIMI_API_KEY", "detected-kimi")
+
+	created, found := firstRunDetect()
+	if !created {
+		t.Fatal("config was not created")
+	}
+	if len(found) != 2 {
+		t.Errorf("found = %v, want zai+kimi", found)
+	}
+	fi, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Errorf("perm = %o, want 600", fi.Mode().Perm())
+	}
+	cfg, err := readConfigFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Zai.APIKey != "detected-zai" || cfg.Kimi.APIKey != "detected-kimi" {
+		t.Errorf("persisted zai=%q kimi=%q", cfg.Zai.APIKey, cfg.Kimi.APIKey)
+	}
+	if cfg.Anthropic.AccessToken != "" || cfg.Codex.AccessToken != "" {
+		t.Error("OAuth tokens must not be frozen into the config")
+	}
+
+	created, _ = firstRunDetect()
+	if created {
+		t.Error("second run overwrote the existing config")
+	}
+}
+
+func TestFirstRunDetectSkipsExistingFile(t *testing.T) {
+	isolate(t)
+	writeConfig(t, `{"zai":{"api_key":"keep-me"}}`)
+	t.Setenv("KIMI_API_KEY", "newer-env-key")
+
+	created, _ := firstRunDetect()
+	if created {
+		t.Fatal("existing config was overwritten")
+	}
+	cfg, err := readConfigFile()
+	if err != nil || cfg.Zai.APIKey != "keep-me" {
+		t.Errorf("config = %+v err=%v, want untouched", cfg, err)
+	}
+}
+
+func TestFirstRunDetectNoKeysCreatesNothing(t *testing.T) {
+	isolate(t)
+	oldLookup := keychainLookup
+	keychainLookup = func(string) string { return "" }
+	t.Cleanup(func() { keychainLookup = oldLookup })
+
+	created, found := firstRunDetect()
+	if created || len(found) != 0 {
+		t.Errorf("created=%v found=%v, want nothing", created, found)
+	}
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Error("config file created without any detected credentials")
+	}
+}
+
+// Admin edits go through writeProviderSecret: set one key, keep everything
+// else in the file, and remove again by writing an empty value.
+func TestWriteProviderSecretPreservesOtherFields(t *testing.T) {
+	isolate(t)
+	writeConfig(t, `{
+		"zai": {"api_key": "z"},
+		"alibaba": {"api_key": "a", "base_url": "https://example.invalid/v1"},
+		"costs": {"zai": "$9/mo"},
+		"custom": [{"name": "X", "url": "https://example.invalid/u", "api_key": "c", "percent": "/p"}]
+	}`)
+
+	if err := writeProviderSecret("kimi", "k"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := readConfigFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Kimi.APIKey != "k" || cfg.Zai.APIKey != "z" || cfg.Alibaba.BaseURL != "https://example.invalid/v1" {
+		t.Errorf("cfg = %+v", cfg)
+	}
+	if cfg.Costs["zai"] != "$9/mo" || len(cfg.Custom) != 1 {
+		t.Errorf("costs/custom not preserved: %+v", cfg)
+	}
+
+	if err := writeProviderSecret("kimi", ""); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ = readConfigFile()
+	if cfg.Kimi.APIKey != "" {
+		t.Error("kimi key not removed")
+	}
+}
+
+// A garbage config must not be clobbered by an admin write.
+func TestWriteProviderSecretRefusesParseError(t *testing.T) {
+	isolate(t)
+	writeConfig(t, `{"zai": {"api_key": "broken"`)
+	before, _ := os.ReadFile(configPath)
+	if err := writeProviderSecret("kimi", "k"); err == nil {
+		t.Fatal("write succeeded over an unparseable config")
+	}
+	after, _ := os.ReadFile(configPath)
+	if string(before) != string(after) {
+		t.Error("unparseable config was modified")
 	}
 }
 

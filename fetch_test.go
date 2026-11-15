@@ -128,6 +128,103 @@ func TestZaiNoteKeepsProductPrefix(t *testing.T) {
 	}
 }
 
+// Kimi reports used_ratio fractions per quota window; the fetcher turns them
+// into percentage gauges with parsed reset times.
+func TestKimiQuotaWindows(t *testing.T) {
+	withStub(t, `{"usages":{
+		"limit_5h":{"used_ratio":0.1164,"reset_time":"2026-11-16T00:40:13Z"},
+		"limit_7d":{"used_ratio":0.5,"reset_time":"2026-11-20T00:00:00Z"},
+		"limit_month_total":{"used_ratio":0.0143,"reset_time":"2026-12-16T00:00:00Z"}}}`)
+
+	gs, note, err := fetchKimi(context.Background(), Creds{KimiKey: "k"})
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if note != "Coding Plan" {
+		t.Errorf("note = %q, want Coding Plan", note)
+	}
+	if len(gs) != 3 {
+		t.Fatalf("gauges = %+v, want 5h/7d/month", gs)
+	}
+	if gs[0].Label != "5h" || gs[0].Used < 11.6 || gs[0].Used > 11.7 || gs[0].Window != 5*time.Hour {
+		t.Errorf("5h gauge = %+v, want ~11.64%% with a 5h window", gs[0])
+	}
+	if gs[0].Reset == nil || gs[0].Reset.Format(time.RFC3339) != "2026-11-16T00:40:13Z" {
+		t.Errorf("5h reset = %v, want parsed reset time", gs[0].Reset)
+	}
+	if gs[2].Label != "month" || gs[2].Used < 1.42 || gs[2].Used > 1.44 {
+		t.Errorf("month gauge = %+v, want ~1.43%%", gs[2])
+	}
+	// 2026-12-16 minus one calendar month is 30 days, so the elapsed bar
+	// gets a real window instead of 0.
+	if gs[2].Window != 30*24*time.Hour {
+		t.Errorf("month window = %v, want 720h", gs[2].Window)
+	}
+}
+
+// Plans without a month_total entry fall back to the code-specific window.
+func TestKimiMonthCodeFallback(t *testing.T) {
+	withStub(t, `{"usages":{
+		"limit_5h":{"used_ratio":0.2,"reset_time":"2026-11-16T00:40:13Z"},
+		"limit_month_code":{"used_ratio":0.3,"reset_time":"2026-12-16T00:00:00Z"}}}`)
+
+	gs, _, err := fetchKimi(context.Background(), Creds{KimiKey: "k"})
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if len(gs) != 2 || gs[1].Label != "month" || gs[1].Used != 30 {
+		t.Fatalf("gauges = %+v, want 5h plus month from limit_month_code", gs)
+	}
+}
+
+func TestKimiEmptyUsagesFails(t *testing.T) {
+	withStub(t, `{"usages":{}}`)
+
+	if _, _, err := fetchKimi(context.Background(), Creds{KimiKey: "k"}); err == nil {
+		t.Fatal("fetch succeeded, want an error for empty usages")
+	}
+}
+
+// An expired Alibaba console session must surface the login offer once per
+// expiry (not every refresh), hold the auto-refresh timer while prompting,
+// and clear after a successful panel.
+func TestAlibabaLoginPromptFlow(t *testing.T) {
+	m := initialModel(Creds{})
+	aliErr := func() []Panel {
+		return []Panel{{Name: "Alibaba", Err: errAlibabaLogin, Updated: time.Now()}}
+	}
+	next, cmd := m.Update(fetchedMsg{panels: aliErr(), at: time.Now(), gen: 0})
+	m = next.(model)
+	if !m.aliPrompt {
+		t.Fatal("login prompt not offered on expired session")
+	}
+	if cmd != nil {
+		t.Error("auto-refresh was armed while the login prompt is open")
+	}
+
+	// Declining resumes the refresh chain.
+	next, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	m = next.(model)
+	if m.aliPrompt || cmd == nil {
+		t.Errorf("decline: aliPrompt=%v cmd=%v, want prompt closed and timer armed", m.aliPrompt, cmd)
+	}
+
+	// The prompt does not re-appear for the same expiry...
+	next, _ = m.Update(fetchedMsg{panels: aliErr(), at: time.Now(), gen: 0})
+	m = next.(model)
+	if m.aliPrompt {
+		t.Error("prompt re-appeared for the same expiry")
+	}
+	// ...but a healthy panel resets it, so a later expiry prompts again.
+	next, _ = m.Update(fetchedMsg{panels: []Panel{{Name: "Alibaba", Updated: time.Now()}}, at: time.Now(), gen: 0})
+	m = next.(model)
+	next, _ = m.Update(fetchedMsg{panels: aliErr(), at: time.Now(), gen: 0})
+	m = next.(model)
+	if !m.aliPrompt {
+		t.Error("prompt did not return after a new expiry")
+	}
+}
+
 // A manual refresh must replace the auto-refresh chain, not add a second one:
 // the timer armed before the key press has to be dropped, or every "r" press
 // permanently doubles how often the dashboard hits every provider.

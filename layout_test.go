@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -191,5 +192,63 @@ func TestLongestCaptionRendersWhole(t *testing.T) {
 	out := renderOne(p, 120)
 	if !strings.Contains(out, caption) {
 		t.Errorf("caption %q was clipped:\n%s", caption, out)
+	}
+}
+
+// A window shorter than the panels must scroll: the footer stays visible on
+// the last row and an oversized scroll offset clamps to the real content.
+func TestViewScrollClampsToContent(t *testing.T) {
+	m := initialModel(Creds{})
+	for i := 0; i < 24; i++ {
+		m.panels = append(m.panels, Panel{
+			Name:    fmt.Sprintf("Panel-%02d", i),
+			Updated: time.Now(),
+			Items:   []Gauge{{Label: "5h", Used: 10}},
+		})
+	}
+	m.width = 100
+	m.height = 20
+	m.last = time.Now()
+	m.scroll = 1000
+
+	out := m.View()
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) > m.height {
+		t.Fatalf("rendered %d lines into a %d-line window", len(lines), m.height)
+	}
+	if !strings.Contains(lines[len(lines)-1], "q quit") {
+		t.Errorf("last line = %q, want the pinned footer", lines[len(lines)-1])
+	}
+	// The clamped view must reach content the un-scrolled view cannot show.
+	m.scroll = 0
+	if top := m.View(); strings.Contains(top, "Panel-23") {
+		t.Error("un-scrolled view already shows the last panel; nothing was clipped")
+	}
+	if !strings.Contains(out, "Panel-23") {
+		t.Error("scrolled view does not reach the last panel")
+	}
+}
+
+// The elapsed caption should carry the elapsed time when the caption column
+// is wide enough, degrade to the bare label, then disappear.
+func TestElapsedCaptionIncludesDuration(t *testing.T) {
+	reset := time.Now().Add(2 * time.Hour) // 3h elapsed of a 5h window
+	g := Gauge{Label: "5h", Used: 60, Reset: &reset, Window: 5 * time.Hour}
+
+	if cap := elapsedCaption(g, 30); !strings.HasPrefix(cap, "elapsed ") || !strings.Contains(cap, "3h") {
+		t.Errorf("wide caption = %q, want the elapsed duration", cap)
+	}
+	if cap := elapsedCaption(g, 9); cap != "elapsed" {
+		t.Errorf("medium caption = %q, want bare label", cap)
+	}
+	if cap := elapsedCaption(g, 8); cap != "" {
+		t.Errorf("narrow caption = %q, want empty", cap)
+	}
+
+	// A reset further out than the window (period not started) clamps to 0m.
+	future := time.Now().Add(30 * time.Hour)
+	g.Reset = &future
+	if cap := elapsedCaption(g, 30); !strings.Contains(cap, "0m") {
+		t.Errorf("future-reset caption = %q, want elapsed 0m", cap)
 	}
 }

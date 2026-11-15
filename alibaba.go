@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -237,25 +238,71 @@ var runAlibabaCLI = func(ctx context.Context, args ...string) ([]byte, error) {
 	return exec.CommandContext(ctx, "bl", args...).Output()
 }
 
-func fetchAlibabaCLI(ctx context.Context, c Creds) ([]Gauge, string, error) {
-	site, region := "international", "ap-southeast-1"
-	switch strings.TrimRight(strings.TrimSpace(c.AliBaseURL), "/") {
+// errAlibabaLogin marks a missing or expired bl console session, so the TUI
+// can offer the interactive `bl auth login` flow instead of a dead error.
+var errAlibabaLogin = errors.New("alibaba console login required")
+
+// alibabaSite maps the configured Token Plan endpoint to the bl console site
+// and region.
+func alibabaSite(base string) (site, region string, err error) {
+	switch strings.TrimRight(strings.TrimSpace(base), "/") {
 	case "", alibabaInternationalURL:
+		return "international", "ap-southeast-1", nil
 	case alibabaChinaURL:
-		site, region = "domestic", "cn-beijing"
+		return "domestic", "cn-beijing", nil
 	default:
-		return nil, "", fmt.Errorf("unsupported Token Plan base_url; use the Singapore or Beijing endpoint")
+		return "", "", fmt.Errorf("unsupported Token Plan base_url; use the Singapore or Beijing endpoint")
 	}
-	body, err := runAlibabaCLI(ctx, "usage", "token-plan", "--config", "default", "--console-site", site, "--console-region", region, "--output", "json", "--timeout", "10")
+}
+
+// alibabaErrorIsSession reports whether a bl error payload means the console
+// session is missing or expired (error code 3, or the matching message).
+func alibabaErrorIsSession(m map[string]any) bool {
+	if code, ok := toFloat(m["code"]); ok && int(code) == 3 {
+		return true
+	}
+	msg, _ := m["message"].(string)
+	return strings.Contains(strings.ToLower(msg), "not logged in or has expired")
+}
+
+func alibabaSessionExpired(data map[string]any, runErr error) bool {
+	if e, ok := data["error"].(map[string]any); ok && alibabaErrorIsSession(e) {
+		return true
+	}
+	var exitErr *exec.ExitError
+	if errors.As(runErr, &exitErr) && strings.Contains(string(exitErr.Stderr), "not logged in or has expired") {
+		return true
+	}
+	return strings.Contains(runErr.Error(), "not logged in or has expired")
+}
+
+func fetchAlibabaCLI(ctx context.Context, c Creds) ([]Gauge, string, error) {
+	site, region, err := alibabaSite(c.AliBaseURL)
 	if err != nil {
+		return nil, "", err
+	}
+	body, runErr := runAlibabaCLI(ctx, "usage", "token-plan", "--config", "default", "--console-site", site, "--console-region", region, "--output", "json", "--timeout", "10")
+	var data map[string]any
+	// Output() still returns the captured stdout when the command fails, and
+	// bl reports an expired console session as a JSON error payload.
+	_ = json.Unmarshal(body, &data)
+	if runErr != nil {
+		if alibabaSessionExpired(data, runErr) {
+			return nil, "", fmt.Errorf("%w: log in with bl auth login --console --config default --console-site %s (the TUI offers this with y)", errAlibabaLogin, site)
+		}
 		// CLI stderr can contain account details. Keep errors actionable and safe.
 		return nil, "", fmt.Errorf("quota unavailable: log in with bl auth login --console --config default --console-site %s, or set ALIBABA_COOKIE", site)
 	}
-	var data map[string]any
-	if json.Unmarshal(body, &data) != nil || data == nil {
+	if data == nil {
 		return nil, "", fmt.Errorf("invalid quota response from bl")
 	}
-	if data["error"] != nil || data["hasQuotaData"] == false {
+	if e := data["error"]; e != nil {
+		if m, ok := e.(map[string]any); ok && alibabaErrorIsSession(m) {
+			return nil, "", fmt.Errorf("%w: log in with bl auth login --console --config default --console-site %s (the TUI offers this with y)", errAlibabaLogin, site)
+		}
+		return nil, "", fmt.Errorf("bl returned no Token Plan quota; check console account and region")
+	}
+	if data["hasQuotaData"] == false {
 		return nil, "", fmt.Errorf("bl returned no Token Plan quota; check console account and region")
 	}
 	gs, err := alibabaGauges(map[string]any{"data": data})

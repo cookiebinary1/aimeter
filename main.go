@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"math"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -47,6 +49,7 @@ type Creds struct {
 	CodexToken  string
 	CodexAcct   string
 	ZaiKey      string
+	KimiKey     string
 	MmKey       string
 	OpenRouter  string
 	EleKey      string
@@ -343,6 +346,76 @@ func zaiWindow(unit, number int) time.Duration {
 	}
 }
 
+func fetchKimi(ctx context.Context, c Creds) ([]Gauge, string, error) {
+	if c.KimiKey == "" {
+		return nil, "", fmt.Errorf("missing KIMI_API_KEY (env / credentials.json)")
+	}
+	// Kimi for Coding plan quota, same endpoint the Kimi Code CLI /usage
+	// command reads: https://api.kimi.com/coding/v1/usages (MoonshotAI/kimi-code).
+	var j struct {
+		Usages struct {
+			Limit5h struct {
+				UsedRatio float64 `json:"used_ratio"`
+				ResetTime string  `json:"reset_time"`
+			} `json:"limit_5h"`
+			Limit7d struct {
+				UsedRatio float64 `json:"used_ratio"`
+				ResetTime string  `json:"reset_time"`
+			} `json:"limit_7d"`
+			MonthTotal struct {
+				UsedRatio float64 `json:"used_ratio"`
+				ResetTime string  `json:"reset_time"`
+			} `json:"limit_month_total"`
+			MonthCode struct {
+				UsedRatio float64 `json:"used_ratio"`
+				ResetTime string  `json:"reset_time"`
+			} `json:"limit_month_code"`
+		} `json:"usages"`
+	}
+	if err := getJSON(ctx, "https://api.kimi.com/coding/v1/usages", map[string]string{
+		"Authorization": "Bearer " + c.KimiKey,
+	}, &j); err != nil {
+		return nil, "", err
+	}
+	add := func(label string, usedRatio float64, resetTime string, window time.Duration) *Gauge {
+		if usedRatio <= 0 && resetTime == "" {
+			return nil
+		}
+		g := Gauge{Label: label, Used: usedRatio * 100, Window: window}
+		if t, err := time.Parse(time.RFC3339, resetTime); err == nil {
+			g.Reset = &t
+		}
+		return &g
+	}
+	var gs []Gauge
+	// Monthly windows are calendar cycles anchored on the billing day: derive
+	// the window length from the reset time so the elapsed bar can render.
+	monthWindow := func(resetTime string) time.Duration {
+		if t, err := time.Parse(time.RFC3339, resetTime); err == nil {
+			return t.Sub(t.AddDate(0, -1, 0))
+		}
+		return 0
+	}
+	month := add("month", j.Usages.MonthTotal.UsedRatio, j.Usages.MonthTotal.ResetTime, monthWindow(j.Usages.MonthTotal.ResetTime))
+	if month == nil {
+		// Some plans report only the code-specific monthly window.
+		month = add("month", j.Usages.MonthCode.UsedRatio, j.Usages.MonthCode.ResetTime, monthWindow(j.Usages.MonthCode.ResetTime))
+	}
+	for _, g := range []*Gauge{
+		add("5h", j.Usages.Limit5h.UsedRatio, j.Usages.Limit5h.ResetTime, 5*time.Hour),
+		add("7d", j.Usages.Limit7d.UsedRatio, j.Usages.Limit7d.ResetTime, 7*24*time.Hour),
+		month,
+	} {
+		if g != nil {
+			gs = append(gs, *g)
+		}
+	}
+	if len(gs) == 0 {
+		return nil, "", fmt.Errorf("no quota windows (Kimi for Coding key required)")
+	}
+	return gs, "Coding Plan", nil
+}
+
 func fetchMinimax(ctx context.Context, c Creds) ([]Gauge, string, error) {
 	if c.MmKey == "" {
 		return nil, "", fmt.Errorf("missing MINIMAX_API_KEY (env / credentials.json)")
@@ -506,6 +579,7 @@ func fetchAll(c Creds) []Panel {
 		{"Anthropic", "anthropic", c.AnthToken, fetchAnthropic},
 		{"OpenAI Codex", "codex", c.CodexToken, fetchCodex},
 		{"Z.AI", "zai", c.ZaiKey, fetchZai},
+		{"Kimi", "kimi", c.KimiKey, fetchKimi},
 		{"MiniMax Code", "minimax", c.MmKey, fetchMinimax},
 		{"OpenRouter", "openrouter", c.OpenRouter, fetchOpenRouter},
 		{"ElevenLabs", "elevenlabs", c.EleKey, fetchElevenLabs},
@@ -646,15 +720,24 @@ type model struct {
 	gen int
 	// static marks a one-shot render (-once): no key hints, no refresh timer.
 	static         bool
+	scroll         int
 	anthPrompt     bool
 	anthRefreshing bool
 	anthAsked      string
 	anthNotice     string
 	anthSource     string
+	// aliPrompt/aliLogining drive the bl console login offer: when the Alibaba
+	// panel reports an expired console session, the user can run the
+	// interactive `bl auth login` without leaving the dashboard.
+	aliPrompt    bool
+	aliLogining  bool
+	aliPrompted  bool
+	aliNotice    string
 }
 
 type tickMsg struct{ gen int }
 type clockMsg time.Time
+type alibabaLoginMsg struct{ err error }
 type fetchedMsg struct {
 	panels     []Panel
 	creds      Creds
@@ -672,6 +755,14 @@ func (m model) Init() tea.Cmd {
 }
 
 var reloadCreds = resolveCreds
+
+// alibabaLoginCmd runs the interactive bl console login in the foreground.
+// tea.ExecProcess suspends the dashboard, attaches the terminal to bl (which
+// opens the browser), and resumes the TUI when the command exits.
+func alibabaLoginCmd(site string) tea.Cmd {
+	c := exec.Command("bl", "auth", "login", "--console", "--config", "default", "--console-site", site)
+	return tea.ExecProcess(c, func(err error) tea.Msg { return alibabaLoginMsg{err} })
+}
 
 func fetchCmd(c Creds, gen int) tea.Cmd {
 	return func() tea.Msg {
@@ -713,6 +804,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if m.aliPrompt {
+			switch msg.String() {
+			case "y":
+				m.aliPrompt = false
+				m.aliLogining = true
+				site, _, siteErr := alibabaSite(m.creds.AliBaseURL)
+				if siteErr != nil {
+					site = "international"
+				}
+				return m, alibabaLoginCmd(site)
+			case "n", "enter", "esc":
+				m.aliPrompt = false
+				m.aliNotice = "Alibaba login declined. Renew it later with: bl auth login --console --config default"
+				return m, refreshTick(m.interval, m.gen)
+			case "q", "ctrl+c":
+				return m, tea.Quit
+			}
+			return m, nil
+		}
 		if m.anthRefreshing && msg.String() != "ctrl+c" {
 			return m, nil
 		}
@@ -723,6 +833,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.loading = true
 			m.gen++
 			return m, fetchCmd(m.creds, m.gen)
+		case "j", "down":
+			m.scroll += 3
+		case "k", "up":
+			m.scroll -= 3
+			if m.scroll < 0 {
+				m.scroll = 0
+			}
+		case "pgdown":
+			m.scroll += m.height - 4
+		case "pgup":
+			m.scroll -= m.height - 4
+			if m.scroll < 0 {
+				m.scroll = 0
+			}
+		case "home":
+			m.scroll = 0
+		}
+	case tea.MouseMsg:
+		if msg.Type == tea.MouseWheelUp {
+			m.scroll -= 3
+			if m.scroll < 0 {
+				m.scroll = 0
+			}
+		} else if msg.Type == tea.MouseWheelDown {
+			m.scroll += 3
 		}
 	case fetchedMsg:
 		if msg.gen != m.gen {
@@ -743,12 +878,35 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		if !m.static && !m.anthPrompt && !m.aliLogining {
+			for _, p := range m.panels {
+				if p.Name != "Alibaba" {
+					continue
+				}
+				if p.Err == nil {
+					m.aliPrompted = false // session healthy again
+				} else if errors.Is(p.Err, errAlibabaLogin) && !m.aliPrompted {
+					m.aliPrompted = true // ask once per expiry, not every 90s
+					m.aliNotice = ""
+					m.aliPrompt = true
+				}
+			}
+		}
 		m.last = msg.at
 		m.loading = false
-		if m.anthPrompt {
+		if m.anthPrompt || m.aliPrompt {
 			return m, nil
 		}
 		return m, refreshTick(m.interval, m.gen)
+	case alibabaLoginMsg:
+		m.aliLogining = false
+		if msg.err != nil {
+			m.aliNotice = "Alibaba login failed: " + msg.err.Error()
+			return m, refreshTick(m.interval, m.gen)
+		}
+		m.aliNotice = "Alibaba console logged in."
+		m.loading = true
+		return m, fetchCmd(m.creds, m.gen)
 	case anthropicRefreshMsg:
 		m.anthRefreshing = false
 		if msg.err != nil {
@@ -759,7 +917,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = true
 		return m, fetchCmd(m.creds, m.gen)
 	case tickMsg:
-		if msg.gen != m.gen || m.anthPrompt || m.anthRefreshing {
+		if msg.gen != m.gen || m.anthPrompt || m.aliPrompt || m.aliLogining || m.anthRefreshing {
 			return m, nil // timer from an abandoned refresh chain
 		}
 		return m, fetchCmd(m.creds, m.gen)
@@ -801,18 +959,26 @@ func (m model) View() string {
 
 	if !m.static {
 		message := m.anthNotice
-		if m.anthPrompt {
+		switch {
+		case m.anthPrompt:
 			message = "Anthropic access token expired. Refresh it now?\nWARNING: This changes Claude Code credentials. A concurrent refresh may invalidate its login. Close Claude Code first.\ny refresh / n cancel (default: no)"
-		} else if m.anthRefreshing {
+		case m.anthRefreshing:
 			message = "Renewing Anthropic token..."
+		case m.aliLogining:
+			message = "Logging in to the Alibaba console (finish in the browser)..."
+		case m.aliPrompt:
+			message = "Alibaba console session expired. Log in with bl? This opens a browser.\ny login / n cancel (default: no)"
+		case m.aliNotice != "":
+			message = m.aliNotice
 		}
 		if message != "" {
 			b.WriteString(lipgloss.NewStyle().Width(w).Render(message) + "\n\n")
 		}
-		if m.anthPrompt || m.anthRefreshing {
+		if m.anthPrompt || m.anthRefreshing || m.aliPrompt || m.aliLogining {
 			return strings.TrimRight(b.String(), "\n")
 		}
 	}
+	head := b.String() // pinned header: title, blank line, optional notice
 	lay := computeLayout(m.panels, w)
 	for _, p := range m.panels {
 		b.WriteString(renderPanel(p, lay))
@@ -847,8 +1013,36 @@ func (m model) View() string {
 			fr = dimStyle.Render(fmt.Sprintf("%ds · %s", left_, fmtClock(m.last)))
 		}
 	}
-	b.WriteString(placeBetween(footer, fr, w))
-	return b.String()
+	foot := placeBetween(footer, fr, w)
+
+	// Scroll: when the panels exceed the terminal height, the body scrolls
+	// between the pinned header and footer instead of losing the tail.
+	if m.height <= 0 {
+		b.WriteString(foot)
+		return strings.TrimRight(b.String(), "\n")
+	}
+	headLines := strings.Count(head, "\n")
+	body := strings.TrimRight(b.String()[len(head):], "\n")
+	var bodyLines []string
+	if body != "" {
+		bodyLines = strings.Split(body, "\n")
+	}
+	visible := m.height - headLines - 1 // -1 for the footer line
+	if visible < 1 {
+		visible = 1
+	}
+	maxScroll := len(bodyLines) - visible
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	if m.scroll > maxScroll {
+		m.scroll = maxScroll
+	}
+	end := m.scroll + visible
+	if end > len(bodyLines) {
+		end = len(bodyLines)
+	}
+	return head + strings.Join(bodyLines[m.scroll:end], "\n") + "\n" + foot
 }
 
 func placeBetween(l, r string, w int) string {
@@ -982,9 +1176,10 @@ func renderPanel(p Panel, lay frameLayout) string {
 			if tp, ok := timeElapsedPct(g); ok {
 				row := strings.Repeat(" ", lay.label) + thinBar(tp, lay.bar) + " " +
 					timePctStyle.Render(fmt.Sprintf("%3.0f%%", tp))
-				// The " elapsed" caption rides in the same column as the others.
-				if lay.extras >= 9 {
-					row += " " + dimStyle.Render("elapsed")
+				// The elapsed caption rides in the same column as the others;
+				// include the elapsed time when the column has room for it.
+				if caption := elapsedCaption(g, lay.extras); caption != "" {
+					row += " " + dimStyle.Render(caption)
 				}
 				rows = append(rows, lipgloss.NewStyle().MaxWidth(content).Width(content).Render("  "+row))
 			}
@@ -1050,6 +1245,23 @@ func timeElapsedPct(g Gauge) (float64, bool) {
 	return clampPct(pct), true
 }
 
+// elapsedCaption renders the window-progress caption. The elapsed time rides
+// along when the caption column is wide enough; otherwise fall back to the
+// bare label, then to nothing on very narrow frames.
+func elapsedCaption(g Gauge, extras int) string {
+	elapsed := g.Window - time.Until(*g.Reset)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	if long := "elapsed " + formatDuration(elapsed); extras >= lipgloss.Width(long)+1 {
+		return long
+	}
+	if extras >= 9 {
+		return "elapsed"
+	}
+	return ""
+}
+
 // ---------------------------------------------------------------------------
 
 // version is overridden at release time with -ldflags "-X main.version=v1.2.3".
@@ -1060,11 +1272,28 @@ func main() {
 	plain := flag.Bool("plain", false, "print one plain-text line per gauge (no TUI, no colors; for scripts)")
 	jsonOut := flag.Bool("json", false, "print all panels as machine-readable JSON (no TUI)")
 	show := flag.Bool("show-creds", false, "print where each provider's credentials resolve from and exit")
+	admin := flag.Bool("admin", false, "open the credential admin (add, edit, or remove provider keys) and exit")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Println("aimeter", version)
+		return
+	}
+
+	// First run with no config: probe the environment and keychain, persist
+	// what is found, and tell the user where it went. Later runs never
+	// overwrite an existing file.
+	if created, found := firstRunDetect(); created {
+		fmt.Fprintf(os.Stderr, "aimeter: detected credentials for %s — wrote %s (manage them with: aimeter -admin)\n",
+			strings.Join(found, ", "), configPath)
+	}
+
+	if *admin {
+		if err := runAdmin(); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
 		return
 	}
 
@@ -1110,7 +1339,7 @@ func main() {
 		return
 	}
 
-	if _, err := tea.NewProgram(initialModel(creds), tea.WithAltScreen()).Run(); err != nil {
+	if _, err := tea.NewProgram(initialModel(creds), tea.WithAltScreen(), tea.WithMouseCellMotion()).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}

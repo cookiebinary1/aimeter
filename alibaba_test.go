@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -155,5 +157,58 @@ func TestAlibabaCLIQuota(t *testing.T) {
 	runAlibabaCLI = func(context.Context, ...string) ([]byte, error) { return nil, context.Canceled }
 	if _, _, err := fetchAlibaba(context.Background(), Creds{AliKey: "test"}); err == nil || !strings.Contains(err.Error(), "bl auth login") {
 		t.Fatalf("missing login guidance: %v", err)
+	}
+}
+
+// An expired bl console session must be distinguishable from other CLI
+// failures so the TUI can offer the interactive login.
+func TestAlibabaCLIExpiredSession(t *testing.T) {
+	old := runAlibabaCLI
+	t.Cleanup(func() { runAlibabaCLI = old })
+
+	expired := `{"error":{"code":3,"message":"Console session is not logged in or has expired.","hint":"Run bl auth login --console"}}`
+	stubs := map[string]func(context.Context, ...string) ([]byte, error){
+		"exit error with expired JSON": func(context.Context, ...string) ([]byte, error) {
+			return []byte(expired), errors.New("exit status 1")
+		},
+		"clean exit with expired JSON": func(context.Context, ...string) ([]byte, error) {
+			return []byte(expired), nil
+		},
+		"exit error with expired stderr": func(context.Context, ...string) ([]byte, error) {
+			return nil, &exec.ExitError{Stderr: []byte("Console session is not logged in or has expired.")}
+		},
+	}
+	for name, stub := range stubs {
+		runAlibabaCLI = stub
+		_, _, err := fetchAlibaba(context.Background(), Creds{AliKey: "test"})
+		if !errors.Is(err, errAlibabaLogin) {
+			t.Errorf("%s: err = %v, want errAlibabaLogin", name, err)
+		}
+	}
+
+	// A generic CLI failure must keep the plain guidance, not the login offer.
+	runAlibabaCLI = func(context.Context, ...string) ([]byte, error) {
+		return nil, errors.New("bl: command not found")
+	}
+	_, _, err := fetchAlibaba(context.Background(), Creds{AliKey: "test"})
+	if err == nil || errors.Is(err, errAlibabaLogin) || !strings.Contains(err.Error(), "ALIBABA_COOKIE") {
+		t.Errorf("generic failure: err = %v, want non-login guidance", err)
+	}
+}
+
+func TestAlibabaSite(t *testing.T) {
+	for base, want := range map[string][2]string{
+		"":                      {"international", "ap-southeast-1"},
+		alibabaInternationalURL: {"international", "ap-southeast-1"},
+		alibabaChinaURL:         {"domestic", "cn-beijing"},
+		alibabaChinaURL + "/":   {"domestic", "cn-beijing"},
+	} {
+		site, region, err := alibabaSite(base)
+		if err != nil || site != want[0] || region != want[1] {
+			t.Errorf("alibabaSite(%q) = %q %q %v, want %q %q", base, site, region, err, want[0], want[1])
+		}
+	}
+	if _, _, err := alibabaSite("https://example.invalid"); err == nil {
+		t.Error("unsupported base URL was accepted")
 	}
 }

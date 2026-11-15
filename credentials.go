@@ -5,8 +5,9 @@ package main
 //
 // Static API-key providers (zai, minimax, openrouter, elevenlabs, meshy, alibaba):
 //
-//	1. env       ZAI_API_KEY, MINIMAX_API_KEY, OPENROUTER_API_KEY,
-//	             ELEVENLABS_API_KEY, MESHY_API_KEY, ALIBABA_API_KEY
+//	1. env       ZAI_API_KEY, KIMI_API_KEY (or MOONSHOT_API_KEY), MINIMAX_API_KEY,
+//	             OPENROUTER_API_KEY, ELEVENLABS_API_KEY, MESHY_API_KEY,
+//	             ALIBABA_API_KEY
 //	2. config    ~/.config/aimeter/credentials.json  (chmod 600)
 //	3. keychain  macOS only: `security find-generic-password -s aimeter -a <name>`
 //	4. omp       local OMP agent.db (build with -tags omp)
@@ -67,6 +68,7 @@ type credentialsFile struct {
 	Anthropic  oauthPair         `json:"anthropic"`
 	Codex      oauthPair         `json:"codex"`
 	Zai        apiKey            `json:"zai"`
+	Kimi       apiKey            `json:"kimi"`
 	Minimax    apiKey            `json:"minimax"`
 	OpenRouter apiKey            `json:"openrouter"`
 	ElevenLabs apiKey            `json:"elevenlabs"`
@@ -77,7 +79,7 @@ type credentialsFile struct {
 }
 
 type apiKey struct {
-	APIKey string `json:"api_key"`
+	APIKey string `json:"api_key,omitempty"`
 }
 
 type alibabaCreds struct {
@@ -220,6 +222,11 @@ func resolveCreds() (Creds, map[string]string) {
 		}
 	}
 	c.ZaiKey = resolveKey("zai", "ZAI_API_KEY", cfg.Zai.APIKey)
+	c.KimiKey = resolveKey("kimi", "KIMI_API_KEY", cfg.Kimi.APIKey)
+	if c.KimiKey == "" {
+		// Moonshot's own docs name the variable; accept it as an alias.
+		c.KimiKey = resolveKey("kimi", "MOONSHOT_API_KEY", cfg.Kimi.APIKey)
+	}
 	c.MmKey = resolveKey("minimax", "MINIMAX_API_KEY", cfg.Minimax.APIKey)
 	c.OpenRouter = resolveKey("openrouter", "OPENROUTER_API_KEY", cfg.OpenRouter.APIKey)
 	c.EleKey = resolveKey("elevenlabs", "ELEVENLABS_API_KEY", cfg.ElevenLabs.APIKey)
@@ -283,7 +290,146 @@ func resolveCreds() (Creds, map[string]string) {
 }
 
 // credProviders is the display/report order.
-var credProviders = []string{"anthropic", "codex", "zai", "minimax", "openrouter", "elevenlabs", "meshy", "alibaba"}
+var credProviders = []string{"anthropic", "codex", "zai", "kimi", "minimax", "openrouter", "elevenlabs", "meshy", "alibaba"}
+
+// staticProviderEnvs lists the environment variables probed for each static
+// (API-key) provider, in priority order. OAuth providers are absent: their
+// tokens rotate, so first-run detection never freezes a copy.
+var staticProviderEnvs = map[string][]string{
+	"zai":        {"ZAI_API_KEY"},
+	"kimi":       {"KIMI_API_KEY", "MOONSHOT_API_KEY"},
+	"minimax":    {"MINIMAX_API_KEY"},
+	"openrouter": {"OPENROUTER_API_KEY"},
+	"elevenlabs": {"ELEVENLABS_API_KEY"},
+	"meshy":      {"MESHY_API_KEY"},
+	"alibaba":    {"ALIBABA_API_KEY"},
+}
+
+// keychainLookup is injectable so tests do not touch the real keychain.
+var keychainLookup = keychainGet
+
+// firstRunDetect runs when the config file does not exist yet: it probes the
+// environment and keychain for static API keys and persists them to
+// credentials.json. Returns true when it created the file, plus the provider
+// ids it found. OAuth providers are deliberately skipped — their live sources
+// (Claude Code storage, codex auth.json) keep working without a frozen copy.
+func firstRunDetect() (created bool, found []string) {
+	if _, err := os.Stat(configPath); err == nil {
+		return false, nil
+	}
+	cfg := &credentialsFile{}
+	for _, id := range credProviders {
+		envs, ok := staticProviderEnvs[id]
+		if !ok {
+			continue
+		}
+		for _, envName := range envs {
+			if v := os.Getenv(envName); v != "" {
+				setStaticKey(cfg, id, v)
+				found = append(found, id)
+				break
+			}
+		}
+		if getStaticKey(cfg, id) == "" {
+			if v := keychainLookup(id); v != "" {
+				setStaticKey(cfg, id, v)
+				found = append(found, id)
+			}
+		}
+	}
+	if len(found) == 0 {
+		return false, nil
+	}
+	b, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return false, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		return false, nil
+	}
+	if err := os.WriteFile(configPath, b, 0o600); err != nil {
+		return false, nil
+	}
+	return true, found
+}
+
+func getStaticKey(cfg *credentialsFile, id string) string {
+	switch id {
+	case "zai":
+		return cfg.Zai.APIKey
+	case "kimi":
+		return cfg.Kimi.APIKey
+	case "minimax":
+		return cfg.Minimax.APIKey
+	case "openrouter":
+		return cfg.OpenRouter.APIKey
+	case "elevenlabs":
+		return cfg.ElevenLabs.APIKey
+	case "meshy":
+		return cfg.Meshy.APIKey
+	case "alibaba":
+		return cfg.Alibaba.APIKey
+	}
+	return ""
+}
+
+func setStaticKey(cfg *credentialsFile, id, value string) {
+	switch id {
+	case "zai":
+		cfg.Zai.APIKey = value
+	case "kimi":
+		cfg.Kimi.APIKey = value
+	case "minimax":
+		cfg.Minimax.APIKey = value
+	case "openrouter":
+		cfg.OpenRouter.APIKey = value
+	case "elevenlabs":
+		cfg.ElevenLabs.APIKey = value
+	case "meshy":
+		cfg.Meshy.APIKey = value
+	case "alibaba":
+		cfg.Alibaba.APIKey = value
+	}
+}
+
+// writeProviderSecret sets or clears one provider's secret in credentials.json,
+// preserving every other field (OAuth pairs, Alibaba endpoint, custom
+// providers, costs). An empty value removes the config entry. OAuth providers
+// store an access_token; the rest an api_key.
+func writeProviderSecret(id, value string) error {
+	cfg, err := readConfigFile()
+	if err != nil {
+		// Missing file is fine (cfg is empty); a parse error must not clobber.
+		if _, statErr := os.Stat(configPath); statErr == nil {
+			return err
+		}
+		cfg = &credentialsFile{}
+	}
+	switch id {
+	case "anthropic":
+		if value == "" {
+			cfg.Anthropic = oauthPair{}
+		} else {
+			cfg.Anthropic.AccessToken = value
+		}
+	case "codex":
+		if value == "" {
+			cfg.Codex = oauthPair{}
+		} else {
+			cfg.Codex.AccessToken = value
+		}
+	default:
+		setStaticKey(cfg, id, value)
+	}
+	b, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(configPath, b, 0o600)
+}
 
 // printCredSources reports where each provider resolved from — never the keys.
 func printCredSources(src map[string]string, custom []customProvider) {
