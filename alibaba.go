@@ -290,6 +290,9 @@ func fetchAlibabaCLI(ctx context.Context, c Creds) ([]Gauge, string, error) {
 		if alibabaSessionExpired(data, runErr) {
 			return nil, "", fmt.Errorf("%w: log in with bl auth login --console --config default --console-site %s (the TUI offers this with y)", errAlibabaLogin, site)
 		}
+		if errors.Is(runErr, exec.ErrNotFound) {
+			return nil, "", fmt.Errorf("bl CLI not found: install it with npm install -g bailian-cli, then run bl auth login --console --config default --console-site %s (or set ALIBABA_COOKIE)", site)
+		}
 		// CLI stderr can contain account details. Keep errors actionable and safe.
 		return nil, "", fmt.Errorf("quota unavailable: log in with bl auth login --console --config default --console-site %s, or set ALIBABA_COOKIE", site)
 	}

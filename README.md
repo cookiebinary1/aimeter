@@ -111,12 +111,12 @@ fill the row instead of wrapping.
 ### Usage
 
 ```sh
-aimeter              # TUI dashboard (q quit, r refresh, auto-refresh 90s)
+aimeter              # TUI dashboard (q quit, r refresh, A admin, auto-refresh 90s)
 aimeter -once        # render the dashboard once, no TUI
 aimeter -plain       # Markdown table — for scripts, logs and agents
 aimeter -json        # machine-readable JSON — for programs
 aimeter -show-creds  # which source each credential resolved from
-aimeter -admin       # add, edit, or remove provider credentials (TUI)
+aimeter -admin       # manage services and provider credentials (TUI)
 aimeter -version     # version string
 ```
 
@@ -239,11 +239,22 @@ and the macOS keychain for API keys and persists what it finds to
 copied — their live sources keep working without a frozen token. The detection
 runs only once; an existing file is never overwritten.
 
-`aimeter -admin` opens a small TUI that lists every provider with its resolved
-source. `Enter` pastes a key for the selected provider (input is hidden and
-stored in `credentials.json`), `x` removes the stored copy, and keys supplied
-by environment variables are marked as env-managed. The dashboard then shows
-exactly the providers that resolve credentials.
+Press `A` in the dashboard to open the admin screen without leaving aimeter;
+`aimeter -admin` opens the same screen directly. It has two tabs (`1`/`2` or
+`Tab`):
+
+- **Credentials** lists every provider with its resolved source. `Enter` pastes
+  a key for the selected provider (input is hidden and stored in
+  `credentials.json`), `x` removes the stored copy, and keys supplied by
+  environment variables are marked as env-managed.
+- **Services** chooses what the dashboard shows. `Space` (or `Enter`) shows or
+  hides a service; `K`/`J` move it up or down. Hidden services are not fetched,
+  so disabling one also stops its requests. The list covers every known
+  provider plus `custom` services, with `●` marking services that currently
+  resolve credentials.
+
+Both tabs write to `credentials.json` immediately and the dashboard reloads
+when you press `Esc` to return to it, so no restart is needed.
 
 ### credentials.json
 
@@ -261,6 +272,10 @@ exactly the providers that resolve credentials.
   },
   "anthropic":  { "access_token": "...", "email": "..." },
   "codex":      { "access_token": "...", "account_id": "..." },
+  "dashboard": {
+    "order":  ["zai", "codex", "anthropic", "custom:MyAI"],
+    "hidden": ["meshy"]
+  },
   "custom": [
     {
       "name": "MyAI",
@@ -277,6 +292,13 @@ exactly the providers that resolve credentials.
 
 Every field is optional — provide only the providers you use. Group/world
 readable permissions produce a warning at startup.
+
+`dashboard.order` lists provider ids (`anthropic`, `codex`, `zai`, `kimi`,
+`minimax`, `openrouter`, `elevenlabs`, `meshy`, `alibaba`, `custom:<name>`) in
+display order; unlisted services keep their default order at the end.
+`dashboard.hidden` lists services to leave off the dashboard (and skip when
+fetching). The admin screen maintains both lists, so editing them by hand is
+never required.
 
 ### Kimi for Coding
 

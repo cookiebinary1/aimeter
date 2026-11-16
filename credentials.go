@@ -76,6 +76,15 @@ type credentialsFile struct {
 	Alibaba    alibabaCreds      `json:"alibaba"`
 	Custom     []customProvider  `json:"custom"`
 	Costs      map[string]string `json:"costs"`
+	Dashboard  dashboardConfig   `json:"dashboard,omitempty"`
+}
+
+// dashboardConfig controls which services the dashboard shows and in what
+// order. Both lists hold provider ids ("zai", "custom:My Service"); ids that
+// no longer resolve are ignored, so a stale entry can never hide a panel.
+type dashboardConfig struct {
+	Order  []string `json:"order,omitempty"`
+	Hidden []string `json:"hidden,omitempty"`
 }
 
 type apiKey struct {
@@ -204,6 +213,7 @@ func resolveCreds() (Creds, map[string]string) {
 	src := map[string]string{}
 	cfg, _ := readConfigFile() // optional; empty on any error
 	c.Costs = cfg.Costs
+	c.Prefs = cfg.Dashboard
 
 	resolveKey := func(name, envName, cfgVal string) string {
 		switch {
@@ -392,18 +402,41 @@ func setStaticKey(cfg *credentialsFile, id, value string) {
 	}
 }
 
-// writeProviderSecret sets or clears one provider's secret in credentials.json,
-// preserving every other field (OAuth pairs, Alibaba endpoint, custom
-// providers, costs). An empty value removes the config entry. OAuth providers
-// store an access_token; the rest an api_key.
-func writeProviderSecret(id, value string) error {
+// loadConfigForWrite returns the current config, tolerating a missing file
+// (empty config) but refusing to overwrite an unparsable one.
+func loadConfigForWrite() (*credentialsFile, error) {
 	cfg, err := readConfigFile()
 	if err != nil {
 		// Missing file is fine (cfg is empty); a parse error must not clobber.
 		if _, statErr := os.Stat(configPath); statErr == nil {
-			return err
+			return nil, err
 		}
-		cfg = &credentialsFile{}
+		return &credentialsFile{}, nil
+	}
+	return cfg, nil
+}
+
+// saveConfigFile writes credentials.json atomically enough for a single-user
+// CLI: create the directory 0700 and the file 0600.
+func saveConfigFile(cfg *credentialsFile) error {
+	b, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(configPath, b, 0o600)
+}
+
+// writeProviderSecret sets or clears one provider's secret in credentials.json,
+// preserving every other field (OAuth pairs, Alibaba endpoint, custom
+// providers, costs, dashboard layout). An empty value removes the config entry.
+// OAuth providers store an access_token; the rest an api_key.
+func writeProviderSecret(id, value string) error {
+	cfg, err := loadConfigForWrite()
+	if err != nil {
+		return err
 	}
 	switch id {
 	case "anthropic":
@@ -421,14 +454,18 @@ func writeProviderSecret(id, value string) error {
 	default:
 		setStaticKey(cfg, id, value)
 	}
-	b, err := json.MarshalIndent(cfg, "", "  ")
+	return saveConfigFile(cfg)
+}
+
+// writeDashboardConfig persists the dashboard layout (service order and
+// hidden services), preserving every other field in credentials.json.
+func writeDashboardConfig(prefs dashboardConfig) error {
+	cfg, err := loadConfigForWrite()
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
-		return err
-	}
-	return os.WriteFile(configPath, b, 0o600)
+	cfg.Dashboard = prefs
+	return saveConfigFile(cfg)
 }
 
 // printCredSources reports where each provider resolved from — never the keys.

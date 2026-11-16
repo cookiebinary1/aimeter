@@ -212,3 +212,21 @@ func TestAlibabaSite(t *testing.T) {
 		t.Error("unsupported base URL was accepted")
 	}
 }
+
+// A missing bl binary is a setup problem, not an expired session: say how to
+// install it instead of asking the user to log in to a CLI that is not there.
+func TestAlibabaCLIMissingBinary(t *testing.T) {
+	old := runAlibabaCLI
+	t.Cleanup(func() { runAlibabaCLI = old })
+
+	runAlibabaCLI = func(context.Context, ...string) ([]byte, error) {
+		return nil, &exec.Error{Name: "bl", Err: exec.ErrNotFound}
+	}
+	_, _, err := fetchAlibaba(context.Background(), Creds{AliKey: "test"})
+	if err == nil || errors.Is(err, errAlibabaLogin) {
+		t.Fatalf("err = %v, want an install hint", err)
+	}
+	if !strings.Contains(err.Error(), "npm install -g bailian-cli") {
+		t.Errorf("err = %v, want the install command", err)
+	}
+}

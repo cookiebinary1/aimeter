@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -59,6 +60,7 @@ type Creds struct {
 	AliCookie   string
 	Custom      []customProvider
 	Costs       map[string]string
+	Prefs       dashboardConfig
 }
 
 // ---------------------------------------------------------------------------
@@ -568,14 +570,57 @@ func fetchMeshy(ctx context.Context, c Creds) ([]Gauge, string, error) {
 // ---------------------------------------------------------------------------
 // Fetch orchestration
 
-func fetchAll(c Creds) []Panel {
-	type def struct {
-		name       string
-		key        string
-		credential string
-		fn         func(context.Context, Creds) ([]Gauge, string, error)
+// serviceDef is one panel source: a built-in provider or a custom service.
+// key is the config id used by dashboard layout and cost overrides.
+type serviceDef struct {
+	name       string
+	key        string
+	credential string
+	fn         func(context.Context, Creds) ([]Gauge, string, error)
+}
+
+// arrangeServices applies the dashboard layout: hidden services are dropped
+// (and never fetched — a disabled service stops making requests) and the rest
+// follow the configured order, with unlisted services keeping their default
+// order at the end.
+func arrangeServices(defs []serviceDef, prefs dashboardConfig) []serviceDef {
+	hidden := make(map[string]bool, len(prefs.Hidden))
+	for _, id := range prefs.Hidden {
+		hidden[id] = true
 	}
-	defs := []def{
+	rank := make(map[string]int, len(prefs.Order))
+	for i, id := range prefs.Order {
+		rank[id] = i
+	}
+	out := defs[:0]
+	for _, d := range defs {
+		if !hidden[d.key] {
+			out = append(out, d)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return orderLess(out[i].key, out[j].key, rank)
+	})
+	return out
+}
+
+// orderLess ranks listed ids before unlisted ones, keeping the incoming order
+// within each group (callers sort stably).
+func orderLess(a, b string, rank map[string]int) bool {
+	ra, aListed := rank[a]
+	rb, bListed := rank[b]
+	switch {
+	case aListed && bListed:
+		return ra < rb
+	case aListed != bListed:
+		return aListed
+	default:
+		return false
+	}
+}
+
+func fetchAll(c Creds) []Panel {
+	defs := []serviceDef{
 		{"Anthropic", "anthropic", c.AnthToken, fetchAnthropic},
 		{"OpenAI Codex", "codex", c.CodexToken, fetchCodex},
 		{"Z.AI", "zai", c.ZaiKey, fetchZai},
@@ -595,15 +640,16 @@ func fetchAll(c Creds) []Panel {
 	defs = configured
 	for _, cp := range c.Custom {
 		p := cp
-		defs = append(defs, def{p.Name, "custom:" + p.Name, "", func(ctx context.Context, _ Creds) ([]Gauge, string, error) {
+		defs = append(defs, serviceDef{p.Name, "custom:" + p.Name, "", func(ctx context.Context, _ Creds) ([]Gauge, string, error) {
 			return fetchCustom(ctx, p)
 		}})
 	}
+	defs = arrangeServices(defs, c.Prefs)
 	var wg sync.WaitGroup
 	results := make([]Panel, len(defs))
 	for i, d := range defs {
 		wg.Add(1)
-		go func(i int, d def) {
+		go func(i int, d serviceDef) {
 			defer wg.Done()
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
@@ -733,11 +779,15 @@ type model struct {
 	aliLogining bool
 	aliPrompted bool
 	aliNotice   string
+	// admin is the embedded admin screen ("A"). While it is open it owns the
+	// whole frame; closing it reloads credentials and layout and refetches.
+	admin *adminModel
 }
 
 type tickMsg struct{ gen int }
 type clockMsg time.Time
 type alibabaLoginMsg struct{ err error }
+type adminCloseMsg struct{}
 type fetchedMsg struct {
 	panels     []Panel
 	creds      Creds
@@ -782,6 +832,37 @@ func refreshTick(d time.Duration, gen int) tea.Cmd {
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.admin != nil {
+		switch msg := msg.(type) {
+		case adminCloseMsg:
+			m.admin = nil
+			m.loading = true
+			m.gen++
+			m.scroll = 0
+			return m, fetchCmd(m.creds, m.gen)
+		case tea.WindowSizeMsg:
+			m.width, m.height = msg.Width, msg.Height
+			m.admin.width, m.admin.height = msg.Width, msg.Height
+			return m, tea.ClearScreen
+		case clockMsg:
+			// Keep the clock chain alive; the admin screen pauses fetching.
+			m.now = time.Time(msg)
+			return m, clockCmd()
+		case tickMsg:
+			return m, nil
+		case fetchedMsg:
+			if msg.gen == m.gen {
+				m.panels, m.creds, m.anthSource = msg.panels, msg.creds, msg.anthSource
+				m.last, m.loading = msg.at, false
+			}
+			return m, nil
+		}
+		next, cmd := m.admin.Update(msg)
+		if am, ok := next.(*adminModel); ok {
+			m.admin = am
+		}
+		return m, cmd
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -833,6 +914,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.loading = true
 			m.gen++
 			return m, fetchCmd(m.creds, m.gen)
+		case "A":
+			m.admin = newAdminModel()
+			m.admin.embedded = true
+			m.admin.width, m.admin.height = m.width, m.height
+			m.scroll = 0
+			return m, m.admin.Init()
 		case "j", "down":
 			m.scroll += 3
 		case "k", "up":
@@ -933,6 +1020,9 @@ func fmtClock(t time.Time) string {
 }
 
 func (m model) View() string {
+	if m.admin != nil {
+		return m.admin.View()
+	}
 	w := m.width
 	if w <= 0 {
 		w = 101
@@ -998,7 +1088,7 @@ func (m model) View() string {
 		return strings.TrimRight(b.String(), "\n")
 	}
 
-	footer := dimStyle.Render("r refresh · q quit")
+	footer := dimStyle.Render(footerKeys(w))
 	var fr string
 	if !m.last.IsZero() {
 		left_ := int(m.interval.Seconds()) - int(time.Since(m.last).Seconds())
@@ -1007,7 +1097,7 @@ func (m model) View() string {
 		}
 		// Narrow terminals only get the clock; the full sentence would wrap.
 		switch {
-		case w >= 58:
+		case w >= 70:
 			fr = dimStyle.Render(fmt.Sprintf("auto-refresh in %ds · updated %s", left_, fmtClock(m.last)))
 		case w >= 34:
 			fr = dimStyle.Render(fmt.Sprintf("%ds · %s", left_, fmtClock(m.last)))
@@ -1043,6 +1133,18 @@ func (m model) View() string {
 		end = len(bodyLines)
 	}
 	return head + strings.Join(bodyLines[m.scroll:end], "\n") + "\n" + foot
+}
+
+// footerKeys shortens the key hints to whatever fits next to the status text.
+func footerKeys(w int) string {
+	switch {
+	case w >= 70:
+		return "r refresh · A admin · q quit"
+	case w >= 60:
+		return "r · A admin · q quit"
+	default:
+		return "A admin · q quit"
+	}
 }
 
 func placeBetween(l, r string, w int) string {
@@ -1272,7 +1374,7 @@ func main() {
 	plain := flag.Bool("plain", false, "print one plain-text line per gauge (no TUI, no colors; for scripts)")
 	jsonOut := flag.Bool("json", false, "print all panels as machine-readable JSON (no TUI)")
 	show := flag.Bool("show-creds", false, "print where each provider's credentials resolve from and exit")
-	admin := flag.Bool("admin", false, "open the credential admin (add, edit, or remove provider keys) and exit")
+	admin := flag.Bool("admin", false, "open the admin screen (services and provider credentials) and exit")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 
