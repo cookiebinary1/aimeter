@@ -104,7 +104,13 @@ The TUI is width-aware: every bar in the frame shares one width and one start
 column, so the panels line up vertically whatever a single row's caption says.
 A wide terminal spends the extra columns on the bars (up to a 220-column
 frame); a narrow one drops the grey detail/reset captions and grows the bars to
-fill the row instead of wrapping.
+fill the row instead of wrapping. All providers render inside one framed
+dashboard, separated by thin dividers.
+
+Press `a` in the dashboard (or run `aimeter -admin`) to open the embedded admin
+screen: manage provider credentials and choose which services the dashboard
+shows and in what order. Changes persist to `credentials.json` immediately, and
+hidden services stop making requests.
 
 <img src="docs/screenshot-narrow.png" alt="aimeter in a narrow terminal" width="380">
 

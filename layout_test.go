@@ -68,10 +68,10 @@ func barRuns(s string) []int {
 
 // A panel must fit its terminal without overflowing AND without wrapping:
 // narrow windows drop the grey captions instead of pushing them to new lines.
-// Expected line count: top border + title + (bar row + elapsed row) + balance
-// row + bottom border.
+// renderPanel returns unboxed content: title + (bar row + elapsed row) +
+// balance row.
 func TestRenderPanelNeverOverflowsOrWraps(t *testing.T) {
-	const wantLines = 6
+	const wantLines = 4
 	for _, w := range []int{24, 30, 40, 50, 60, 80, 100} {
 		lines := strings.Split(renderOne(widePanel(), w), "\n")
 		if len(lines) != wantLines {

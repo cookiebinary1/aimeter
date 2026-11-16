@@ -673,6 +673,7 @@ func fetchAll(c Creds) []Panel {
 var (
 	titleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15"))
 	dimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+	keyStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("75"))
 	headerStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Bold(true)
 	okDotStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("41"))
 	errStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
@@ -914,7 +915,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.loading = true
 			m.gen++
 			return m, fetchCmd(m.creds, m.gen)
-		case "A":
+		case "a", "A":
 			m.admin = newAdminModel()
 			m.admin.embedded = true
 			m.admin.width, m.admin.height = m.width, m.height
@@ -1070,10 +1071,19 @@ func (m model) View() string {
 	}
 	head := b.String() // pinned header: title, blank line, optional notice
 	lay := computeLayout(m.panels, w)
+	var sections []string
 	for _, p := range m.panels {
-		b.WriteString(renderPanel(p, lay))
-		b.WriteString("\n")
+		sections = append(sections, renderPanel(p, lay))
 	}
+	sep := lipgloss.NewStyle().Foreground(lipgloss.Color("238")).
+		Render(strings.Repeat("─", lay.inner-2))
+	b.WriteString(lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("62")).
+		Padding(0, 1).
+		Width(lay.inner).
+		Render(strings.Join(sections, "\n"+sep+"\n")))
+	b.WriteString("\n")
 
 	if m.loading && m.last.IsZero() {
 		b.WriteString(dimStyle.Render("  loading…") + "\n")
@@ -1139,12 +1149,26 @@ func (m model) View() string {
 func footerKeys(w int) string {
 	switch {
 	case w >= 70:
-		return "r refresh · A admin · q quit"
+		return styledKeys("r refresh · a admin · q quit")
 	case w >= 60:
-		return "r · A admin · q quit"
+		return styledKeys("r · a admin · q quit")
 	default:
-		return "A admin · q quit"
+		return styledKeys("a admin · q quit")
 	}
+}
+
+// styledKeys highlights the key letters so the hints read as actionable.
+func styledKeys(s string) string {
+	parts := strings.Split(s, " · ")
+	for i, p := range parts {
+		fields := strings.SplitN(p, " ", 2)
+		if len(fields) == 2 {
+			parts[i] = keyStyle.Render(fields[0]) + dimStyle.Render(" "+fields[1])
+		} else {
+			parts[i] = keyStyle.Render(p)
+		}
+	}
+	return strings.Join(parts, dimStyle.Render(" · "))
 }
 
 func placeBetween(l, r string, w int) string {
@@ -1234,7 +1258,7 @@ func captionText(g Gauge) string {
 }
 
 func renderPanel(p Panel, lay frameLayout) string {
-	color, isErr := panelColor(p)
+	_, isErr := panelColor(p)
 	content := lay.content
 
 	dot := okDotStyle.Render("●") + " "
@@ -1289,12 +1313,7 @@ func renderPanel(p Panel, lay frameLayout) string {
 		body = strings.Join(rows, "\n")
 	}
 
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(color).
-		Padding(0, 1).
-		Width(lay.inner).
-		Render(title + "\n" + body)
+	box := title + "\n" + body
 	return box
 }
 

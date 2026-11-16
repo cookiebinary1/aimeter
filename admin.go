@@ -18,11 +18,11 @@ import (
 type adminTab int
 
 const (
-	adminTabCredentials adminTab = iota
-	adminTabServices
+	adminTabServices adminTab = iota
+	adminTabCredentials
 )
 
-var adminTabTitles = []string{"Credentials", "Services"}
+var adminTabTitles = []string{"Services", "Credentials"}
 
 type adminProvider struct {
 	id    string
@@ -282,6 +282,19 @@ func (m *adminModel) updateCredentials(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.reload(fmt.Sprintf("%s removed from %s", row.provider.name, configPath))
+	case "h", "s":
+		row := m.rows[m.cursor]
+		for i := range m.services {
+			if m.services[i].id == row.provider.id {
+				m.services[i].hidden = !m.services[i].hidden
+				if m.services[i].hidden {
+					m.saveLayout(fmt.Sprintf("%s hidden from the dashboard", row.provider.name))
+				} else {
+					m.saveLayout(fmt.Sprintf("%s shown on the dashboard", row.provider.name))
+				}
+				break
+			}
+		}
 	}
 	return m, nil
 }
@@ -379,7 +392,7 @@ func (m *adminModel) View() string {
 		b.WriteString("\n  " + m.input.View())
 	}
 
-	b.WriteString("\n\n" + lipgloss.NewStyle().MaxWidth(w).Render(dimStyle.Render("  "+m.hint(w))))
+	b.WriteString("\n\n" + lipgloss.NewStyle().MaxWidth(w).Render("  "+styledKeys(m.hint(w))))
 	return b.String()
 }
 
@@ -392,12 +405,21 @@ func (m *adminModel) hint(w int) string {
 		if m.tab == adminTabServices {
 			return "↑/↓ move · Space show/hide · K/J reorder · Tab credentials · " + closeHint
 		}
-		return "↑/↓ move · Enter add/edit key · x remove · Tab services · " + closeHint
+		return "↑/↓ move · Enter add/edit key · x remove · h show/hide · Tab services · " + closeHint
 	}
 	if m.tab == adminTabServices {
 		return "↑↓ · Space toggle · K/J order · Tab · " + closeHint
 	}
-	return "↑↓ · Enter key · x remove · Tab · " + closeHint
+	return "↑↓ · Enter key · x remove · h show/hide · Tab · " + closeHint
+}
+
+func (m *adminModel) serviceById(id string) *adminService {
+	for i := range m.services {
+		if m.services[i].id == id {
+			return &m.services[i]
+		}
+	}
+	return nil
 }
 
 func (m *adminModel) credentialsView(w int) string {
@@ -441,6 +463,9 @@ func (m *adminModel) credentialsView(w int) string {
 			status = adminOffBadge.Render("○ no key")
 		default:
 			status = adminOnBadge.Render("● ready")
+		}
+		if s := m.serviceById(r.provider.id); s != nil && s.hidden {
+			status += adminOffBadge.Render("  hidden")
 		}
 		lines = append(lines, cursor+name+source+status)
 	}
